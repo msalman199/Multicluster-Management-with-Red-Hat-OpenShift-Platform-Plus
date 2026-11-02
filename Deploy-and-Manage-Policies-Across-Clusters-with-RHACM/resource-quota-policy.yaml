@@ -1,0 +1,139 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: resource-quota-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.DS Data Security
+    policy.open-cluster-management.io/controls: PR.DS-4 Resource Management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: production-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            include:
+              - production
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: production-quota
+                  namespace: production
+                spec:
+                  hard:
+                    requests.cpu: "4"
+                    requests.memory: 8Gi
+                    limits.cpu: "8"
+                    limits.memory: 16Gi
+                    persistentvolumeclaims: "10"
+                    pods: "20"
+                    services: "10"
+                    secrets: "20"
+                    configmaps: "20"
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: development-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: development-quota
+                  namespace: development
+                spec:
+                  hard:
+                    requests.cpu: "2"
+                    requests.memory: 4Gi
+                    limits.cpu: "4"
+                    limits.memory: 8Gi
+                    persistentvolumeclaims: "5"
+                    pods: "10"
+                    services: "5"
+                    secrets: "10"
+                    configmaps: "10"
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: limit-range-config
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: LimitRange
+                metadata:
+                  name: resource-limits
+                spec:
+                  limits:
+                    - default:
+                        cpu: 500m
+                        memory: 512Mi
+                      defaultRequest:
+                        cpu: 100m
+                        memory: 128Mi
+                      type: Container
+                    - max:
+                        cpu: "2"
+                        memory: 2Gi
+                      min:
+                        cpu: 50m
+                        memory: 64Mi
+                      type: Container
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-resource-quota-policy
+  namespace: policies
+placementRef:
+  name: placement-resource-quota-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: resource-quota-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-resource-quota-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+          - development

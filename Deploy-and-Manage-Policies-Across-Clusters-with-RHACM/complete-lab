@@ -1,0 +1,993 @@
+Lab 4: Deploy and Manage Policies Across Clusters with RHACM
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamentals of Red Hat Advanced Cluster Management (RHACM) policy framework
+Define and deploy pod security policies across multiple OpenShift clusters
+Apply resource quotas consistently across managed clusters
+Ensure security policy compliance and consistency in a multi-cluster environment
+Monitor and troubleshoot policy violations across your cluster fleet
+Implement governance best practices using open-source tools
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes and OpenShift concepts
+Familiarity with YAML syntax and Kubernetes resource definitions
+Knowledge of pod security concepts and resource management
+Experience with command-line interface (CLI) tools
+Understanding of cluster administration basics
+Technical Requirements:
+
+Access to Al Nafi cloud-based Linux machines (click Start Lab to begin)
+Multiple OpenShift clusters managed by RHACM
+oc CLI tool installed and configured
+kubectl CLI tool available
+Text editor (vim, nano, or preferred editor)
+Lab Environment Setup
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines for this lab. Simply click Start Lab to access your environment. No need to build your own virtual machines or configure complex networking.
+
+Your lab environment includes:
+
+Hub cluster with RHACM installed
+Two managed clusters (cluster-1 and cluster-2)
+Pre-configured CLI tools
+Sample applications for testing
+Task 1: Define and Deploy Pod Security Policies
+Subtask 1.1: Understanding RHACM Policy Framework
+RHACM uses a policy-based governance model to manage compliance across clusters. Let's start by exploring the existing policy structure.
+
+Step 1: Connect to your hub cluster and examine the policy namespace
+
+# Switch to the hub cluster context
+oc config use-context hub-cluster
+
+# Check if RHACM policies namespace exists
+oc get namespaces | grep policies
+
+# If not present, create the policies namespace
+oc create namespace policies
+Step 2: Explore existing policy templates
+
+# List any existing policies
+oc get policies -A
+
+# Check for policy templates
+oc get configurationpolicy -A
+Subtask 1.2: Create Pod Security Policy Template
+Step 1: Create a comprehensive pod security policy definition
+
+# Create a directory for policy files
+mkdir -p ~/rhacm-policies
+cd ~/rhacm-policies
+Step 2: Create the pod security policy YAML file
+
+cat > pod-security-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: pod-security-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Identity Management Authentication and Access Control
+    policy.open-cluster-management.io/controls: PR.AC-4 Access Control
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: pod-security-policy-config
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - default
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: SecurityContextConstraints
+                metadata:
+                  name: restricted-pod-security
+                allowHostDirVolumePlugin: false
+                allowHostIPC: false
+                allowHostNetwork: false
+                allowHostPID: false
+                allowHostPorts: false
+                allowPrivilegedContainer: false
+                allowedCapabilities: null
+                defaultAddCapabilities: null
+                fsGroup:
+                  type: MustRunAs
+                  ranges:
+                    - min: 1
+                      max: 65535
+                readOnlyRootFilesystem: false
+                requiredDropCapabilities:
+                  - KILL
+                  - MKNOD
+                  - SETUID
+                  - SETGID
+                runAsUser:
+                  type: MustRunAsNonRoot
+                seLinuxContext:
+                  type: MustRunAs
+                supplementalGroups:
+                  type: MustRunAs
+                  ranges:
+                    - min: 1
+                      max: 65535
+                volumes:
+                  - configMap
+                  - downwardAPI
+                  - emptyDir
+                  - persistentVolumeClaim
+                  - projected
+                  - secret
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-pod-security-policy
+  namespace: policies
+placementRef:
+  name: placement-pod-security-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: pod-security-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-pod-security-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+          - development
+EOF
+Step 3: Apply the pod security policy
+
+# Apply the policy to the hub cluster
+oc apply -f pod-security-policy.yaml
+
+# Verify the policy was created
+oc get policy pod-security-policy -n policies
+
+# Check the placement binding
+oc get placementbinding binding-pod-security-policy -n policies
+Subtask 1.3: Create Network Security Policy
+Step 1: Define a network policy for pod-to-pod communication
+
+cat > network-security-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: network-security-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Identity Management Authentication and Access Control
+    policy.open-cluster-management.io/controls: PR.AC-3 Access Control
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: network-policy-config
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: deny-all-ingress
+                  namespace: production
+                spec:
+                  podSelector: {}
+                  policyTypes:
+                    - Ingress
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: allow-same-namespace
+                  namespace: production
+                spec:
+                  podSelector: {}
+                  policyTypes:
+                    - Ingress
+                  ingress:
+                    - from:
+                        - namespaceSelector:
+                            matchLabels:
+                              name: production
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-network-security-policy
+  namespace: policies
+placementRef:
+  name: placement-network-security-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: network-security-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-network-security-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+EOF
+Step 2: Apply the network security policy
+
+# Apply the network policy
+oc apply -f network-security-policy.yaml
+
+# Verify policy creation
+oc get policy network-security-policy -n policies
+Task 2: Apply Resource Quotas Across Clusters
+Subtask 2.1: Create Resource Quota Policy Template
+Step 1: Define comprehensive resource quotas for different environments
+
+cat > resource-quota-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: resource-quota-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.DS Data Security
+    policy.open-cluster-management.io/controls: PR.DS-4 Resource Management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: production-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            include:
+              - production
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: production-quota
+                  namespace: production
+                spec:
+                  hard:
+                    requests.cpu: "4"
+                    requests.memory: 8Gi
+                    limits.cpu: "8"
+                    limits.memory: 16Gi
+                    persistentvolumeclaims: "10"
+                    pods: "20"
+                    services: "10"
+                    secrets: "20"
+                    configmaps: "20"
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: development-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: development-quota
+                  namespace: development
+                spec:
+                  hard:
+                    requests.cpu: "2"
+                    requests.memory: 4Gi
+                    limits.cpu: "4"
+                    limits.memory: 8Gi
+                    persistentvolumeclaims: "5"
+                    pods: "10"
+                    services: "5"
+                    secrets: "10"
+                    configmaps: "10"
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: limit-range-config
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: LimitRange
+                metadata:
+                  name: resource-limits
+                spec:
+                  limits:
+                    - default:
+                        cpu: 500m
+                        memory: 512Mi
+                      defaultRequest:
+                        cpu: 100m
+                        memory: 128Mi
+                      type: Container
+                    - max:
+                        cpu: "2"
+                        memory: 2Gi
+                      min:
+                        cpu: 50m
+                        memory: 64Mi
+                      type: Container
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-resource-quota-policy
+  namespace: policies
+placementRef:
+  name: placement-resource-quota-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: resource-quota-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-resource-quota-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+          - development
+EOF
+Step 2: Apply the resource quota policy
+
+# Apply the resource quota policy
+oc apply -f resource-quota-policy.yaml
+
+# Verify the policy was created
+oc get policy resource-quota-policy -n policies
+
+# Check policy status
+oc describe policy resource-quota-policy -n policies
+Subtask 2.2: Create Namespace Management Policy
+Step 1: Define a policy to ensure proper namespace configuration
+
+cat > namespace-management-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: namespace-management-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Identity Management Authentication and Access Control
+    policy.open-cluster-management.io/controls: PR.AC-1 Access Control Policy
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: required-namespaces
+        spec:
+          remediationAction: enforce
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: production
+                  labels:
+                    name: production
+                    environment: production
+                    managed-by: rhacm
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: development
+                  labels:
+                    name: development
+                    environment: development
+                    managed-by: rhacm
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: namespace-labels-policy
+        spec:
+          remediationAction: inform
+          severity: low
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  labels:
+                    pod-security.kubernetes.io/enforce: restricted
+                    pod-security.kubernetes.io/audit: restricted
+                    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-namespace-management-policy
+  namespace: policies
+placementRef:
+  name: placement-namespace-management-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: namespace-management-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-namespace-management-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchLabels:
+      managed-by: rhacm
+EOF
+Step 2: Apply the namespace management policy
+
+# Apply the namespace management policy
+oc apply -f namespace-management-policy.yaml
+
+# Verify policy creation
+oc get policy namespace-management-policy -n policies
+Task 3: Ensure Consistency in Security Policies
+Subtask 3.1: Create Compliance Monitoring Policy
+Step 1: Define a comprehensive compliance monitoring policy
+
+cat > compliance-monitoring-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: compliance-monitoring-policy
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: DE.CM Security Continuous Monitoring
+    policy.open-cluster-management.io/controls: DE.CM-1 Monitoring
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: pod-security-standards-compliance
+        spec:
+          remediationAction: inform
+          severity: high
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  securityContext:
+                    runAsUser: 0
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  containers:
+                    - securityContext:
+                        privileged: true
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: resource-usage-compliance
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  containers:
+                    - resources: {}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-compliance-monitoring-policy
+  namespace: policies
+placementRef:
+  name: placement-compliance-monitoring-policy
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: compliance-monitoring-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-compliance-monitoring-policy
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchLabels:
+      managed-by: rhacm
+EOF
+Step 2: Apply the compliance monitoring policy
+
+# Apply the compliance monitoring policy
+oc apply -f compliance-monitoring-policy.yaml
+
+# Verify policy creation
+oc get policy compliance-monitoring-policy -n policies
+Subtask 3.2: Verify Policy Deployment Across Clusters
+Step 1: Check policy status across all managed clusters
+
+# List all policies and their status
+oc get policies -n policies
+
+# Get detailed status of each policy
+for policy in $(oc get policies -n policies -o name); do
+  echo "=== Policy: $policy ==="
+  oc describe $policy -n policies | grep -A 10 "Status:"
+  echo ""
+done
+Step 2: Verify policy compliance on managed clusters
+
+# Switch to managed cluster context (cluster-1)
+oc config use-context cluster-1
+
+# Check if namespaces were created
+oc get namespaces production development
+
+# Verify resource quotas are applied
+oc get resourcequota -n production
+oc get resourcequota -n development
+
+# Check limit ranges
+oc get limitrange -n production
+oc get limitrange -n development
+
+# Verify network policies
+oc get networkpolicy -n production
+Step 3: Test policy enforcement with a sample application
+
+# Create a test pod that should violate security policies
+cat > test-violation-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-violation-test
+  namespace: production
+spec:
+  containers:
+    - name: test-container
+      image: nginx:latest
+      securityContext:
+        runAsUser: 0
+        privileged: true
+      resources: {}
+EOF
+
+# Try to apply the violating pod
+oc apply -f test-violation-pod.yaml
+
+# Check if the pod was blocked or flagged
+oc get pods -n production
+oc describe pod security-violation-test -n production 2>/dev/null || echo "Pod creation blocked by policy"
+Subtask 3.3: Create Policy Violation Remediation
+Step 1: Create a compliant version of the test application
+
+cat > compliant-test-pod.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: compliant-test-app
+  namespace: production
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    fsGroup: 2000
+  containers:
+    - name: app-container
+      image: nginx:latest
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 1001
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: var-cache-nginx
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+  volumes:
+    - name: tmp-volume
+      emptyDir: {}
+    - name: var-cache-nginx
+      emptyDir: {}
+    - name: var-run
+      emptyDir: {}
+EOF
+
+# Apply the compliant pod
+oc apply -f compliant-test-pod.yaml
+
+# Verify the pod is running
+oc get pods -n production
+oc describe pod compliant-test-app -n production
+Step 2: Monitor policy compliance dashboard
+
+# Switch back to hub cluster
+oc config use-context hub-cluster
+
+# Check overall policy compliance status
+oc get policies -n policies -o wide
+
+# Create a simple compliance report
+echo "=== RHACM Policy Compliance Report ==="
+echo "Generated on: $(date)"
+echo ""
+
+for policy in $(oc get policies -n policies -o jsonpath='{.items[*].metadata.name}'); do
+  echo "Policy: $policy"
+  compliant=$(oc get policy $policy -n policies -o jsonpath='{.status.compliant}')
+  echo "  Status: $compliant"
+  
+  # Get violation details if non-compliant
+  if [ "$compliant" != "Compliant" ]; then
+    echo "  Violations:"
+    oc get policy $policy -n policies -o jsonpath='{.status.status[*].clustername}' | tr ' ' '\n' | while read cluster; do
+      if [ ! -z "$cluster" ]; then
+        echo "    - Cluster: $cluster"
+      fi
+    done
+  fi
+  echo ""
+done
+Subtask 3.4: Implement Policy Automation and Alerts
+Step 1: Create a policy violation alert configuration
+
+cat > policy-alert-config.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: policy-violation-alert
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: RS.CO Communications
+    policy.open-cluster-management.io/controls: RS.CO-2 Incident Response
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: alert-manager-config
+        spec:
+          remediationAction: inform
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: policy-violation-alerts
+                  namespace: openshift-monitoring
+                data:
+                  alerting_rules.yml: |
+                    groups:
+                    - name: rhacm.policy.violations
+                      rules:
+                      - alert: PolicyViolationDetected
+                        expr: increase(policy_evaluation_total{result="violation"}[5m]) > 0
+                        for: 1m
+                        labels:
+                          severity: warning
+                        annotations:
+                          summary: "RHACM Policy Violation Detected"
+                          description: "Policy {{ $labels.policy }} has violations on cluster {{ $labels.cluster }}"
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-policy-violation-alert
+  namespace: policies
+placementRef:
+  name: placement-policy-violation-alert
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: policy-violation-alert
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-policy-violation-alert
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchLabels:
+      managed-by: rhacm
+EOF
+Step 2: Apply the alert configuration
+
+# Apply the alert configuration
+oc apply -f policy-alert-config.yaml
+
+# Verify the alert policy
+oc get policy policy-violation-alert -n policies
+Verification and Testing
+Step 1: Comprehensive Policy Status Check
+# Create a comprehensive status check script
+cat > policy-status-check.sh << 'EOF'
+#!/bin/bash
+
+echo "=== RHACM Policy Management Status Check ==="
+echo "Timestamp: $(date)"
+echo ""
+
+# Check hub cluster connection
+echo "1. Hub Cluster Connection:"
+oc whoami --show-server
+echo ""
+
+# List all policies
+echo "2. Deployed Policies:"
+oc get policies -n policies -o custom-columns=NAME:.metadata.name,STATUS:.status.compliant,REMEDIATION:.spec.remediationAction
+echo ""
+
+# Check managed clusters
+echo "3. Managed Clusters:"
+oc get managedclusters -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type,AVAILABLE:.status.conditions[0].status
+echo ""
+
+# Policy compliance summary
+echo "4. Policy Compliance Summary:"
+total_policies=$(oc get policies -n policies --no-headers | wc -l)
+compliant_policies=$(oc get policies -n policies -o jsonpath='{.items[?(@.status.compliant=="Compliant")].metadata.name}' | wc -w)
+non_compliant_policies=$((total_policies - compliant_policies))
+
+echo "  Total Policies: $total_policies"
+echo "  Compliant: $compliant_policies"
+echo "  Non-Compliant: $non_compliant_policies"
+echo ""
+
+# Detailed policy status
+echo "5. Detailed Policy Status:"
+for policy in $(oc get policies -n policies -o jsonpath='{.items[*].metadata.name}'); do
+  echo "  Policy: $policy"
+  status=$(oc get policy $policy -n policies -o jsonpath='{.status.compliant}')
+  remediation=$(oc get policy $policy -n policies -o jsonpath='{.spec.remediationAction}')
+  echo "    Status: $status"
+  echo "    Remediation: $remediation"
+  echo ""
+done
+EOF
+
+# Make the script executable and run it
+chmod +x policy-status-check.sh
+./policy-status-check.sh
+Step 2: Test Policy Enforcement
+# Test resource quota enforcement
+echo "Testing resource quota enforcement..."
+
+# Try to create a pod that exceeds limits
+cat > resource-limit-test.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-limit-test
+  namespace: production
+spec:
+  containers:
+    - name: test-container
+      image: nginx:latest
+      resources:
+        requests:
+          cpu: "10"
+          memory: 20Gi
+        limits:
+          cpu: "20"
+          memory: 40Gi
+EOF
+
+# Apply and check if it's blocked
+oc apply -f resource-limit-test.yaml
+oc get pods -n production | grep resource-limit-test || echo "Pod creation blocked by resource quota"
+Troubleshooting Common Issues
+Issue 1: Policy Not Propagating to Managed Clusters
+Symptoms: Policy shows as created but not appearing on managed clusters
+
+Solution:
+
+# Check placement rule and binding
+oc get placementrule -n policies
+oc get placementbinding -n policies
+
+# Verify cluster labels match placement rule selectors
+oc get managedclusters --show-labels
+
+# Check policy controller logs
+oc logs -n open-cluster-management deployment/governance-policy-propagator
+Issue 2: Policy Violations Not Being Detected
+Symptoms: Non-compliant resources exist but policy shows compliant
+
+Solution:
+
+# Check configuration policy status
+oc describe configurationpolicy -A
+
+# Verify namespace selectors
+oc get policy <policy-name> -n policies -o yaml | grep -A 5 namespaceSelector
+
+# Check policy evaluation frequency
+oc get configurationpolicy -A -o jsonpath='{.items[*].spec.evaluationInterval}'
+Issue 3: Remediation Not Working
+Symptoms: Policy detects violations but doesn't fix them
+
+Solution:
+
+# Verify remediation action is set to enforce
+oc get policy <policy-name> -n policies -o jsonpath='{.spec.remediationAction}'
+
+# Check for RBAC issues
+oc auth can-i create pods --as=system:serviceaccount:open-cluster-management-agent-addon:governance-policy-framework
+
+# Review policy template syntax
+oc get policy <policy-name> -n policies -o yaml
+Lab Cleanup
+# Clean up test resources
+oc delete pod compliant-test-app -n production --ignore-not-found
+oc delete pod security-violation-test -n production --ignore-not-found
+oc delete pod resource-limit-test -n production --ignore-not-found
+
+# Remove test files
+rm -f test-violation-pod.yaml compliant-test-pod.yaml resource-limit-test.yaml
+
+# Optional: Remove all policies (only if instructed)
+# oc delete policies --all -n policies
+Conclusion
+Congratulations! You have successfully completed Lab 4: Deploy and Manage Policies Across Clusters with RHACM. In this comprehensive lab, you have accomplished the following:
+
+Key Achievements
+Policy Framework Mastery:
+
+Implemented comprehensive pod security policies using RHACM's governance framework
+Created and deployed network security policies to control pod-to-pod communication
+Established resource quotas and limit ranges

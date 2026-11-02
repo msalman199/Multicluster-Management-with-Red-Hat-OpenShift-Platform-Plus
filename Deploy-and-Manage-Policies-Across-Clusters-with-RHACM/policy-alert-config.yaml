@@ -1,0 +1,69 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: policy-violation-alert
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: RS.CO Communications
+    policy.open-cluster-management.io/controls: RS.CO-2 Incident Response
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: alert-manager-config
+        spec:
+          remediationAction: inform
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: policy-violation-alerts
+                  namespace: openshift-monitoring
+                data:
+                  alerting_rules.yml: |
+                    groups:
+                    - name: rhacm.policy.violations
+                      rules:
+                      - alert: PolicyViolationDetected
+                        expr: increase(policy_evaluation_total{result="violation"}[5m]) > 0
+                        for: 1m
+                        labels:
+                          severity: warning
+                        annotations:
+                          summary: "RHACM Policy Violation Detected"
+                          description: "Policy {{ $labels.policy }} has violations on cluster {{ $labels.cluster }}"
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-policy-violation-alert
+  namespace: policies
+placementRef:
+  name: placement-policy-violation-alert
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: policy-violation-alert
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-policy-violation-alert
+  namespace: policies
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchLabels:
+      managed-by: rhacm
