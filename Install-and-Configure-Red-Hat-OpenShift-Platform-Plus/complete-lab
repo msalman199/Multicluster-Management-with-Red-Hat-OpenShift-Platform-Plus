@@ -1,0 +1,480 @@
+Lab 2: Install and Configure Red Hat OpenShift Platform Plus
+Objectives
+By the end of this lab, you will be able to:
+
+• Install and configure Red Hat OpenShift Platform Plus on Red Hat Enterprise Linux (RHEL) • Connect multiple Kubernetes clusters to the Platform Plus instance • Navigate and verify the installation through the web interface • Understand the architecture and components of OpenShift Platform Plus • Manage multicluster environments using centralized governance
+
+Prerequisites
+Before starting this lab, you should have:
+
+• Basic understanding of Kubernetes concepts and architecture • Familiarity with Linux command line operations • Knowledge of container technologies and OpenShift fundamentals • Understanding of YAML configuration files • Basic networking concepts including DNS and load balancing • Experience with web-based administration interfaces
+
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines for this lab. Simply click Start Lab to access your environment - no need to build your own virtual machines or configure infrastructure.
+
+Your lab environment includes: • One RHEL 9 machine for OpenShift Platform Plus installation • Two additional RHEL 9 machines simulating remote cluster environments • Pre-installed Docker and necessary dependencies • Network connectivity between all machines
+
+Task 1: Set up OpenShift Platform Plus on RHEL
+Subtask 1.1: Prepare the System Environment
+First, we need to prepare our RHEL system with the necessary prerequisites and dependencies.
+
+Step 1: Update the system and install required packages
+
+# Update the system packages
+sudo dnf update -y
+
+# Install required packages
+sudo dnf install -y wget curl git podman skopeo jq
+
+# Install Docker if not already present
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+Step 2: Configure system resources and limits
+
+# Set up system limits for container operations
+echo "* soft nofile 65536" | sudo tee -a /etc/security/limits.conf
+echo "* hard nofile 65536" | sudo tee -a /etc/security/limits.conf
+
+# Configure kernel parameters
+echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+Step 3: Create dedicated user and directories
+
+# Create OpenShift Platform Plus user
+sudo useradd -m -s /bin/bash ocp-plus
+sudo usermod -aG docker ocp-plus
+
+# Create necessary directories
+sudo mkdir -p /opt/openshift-platform-plus
+sudo mkdir -p /var/lib/openshift-platform-plus
+sudo chown -R ocp-plus:ocp-plus /opt/openshift-platform-plus
+sudo chown -R ocp-plus:ocp-plus /var/lib/openshift-platform-plus
+Subtask 1.2: Download and Install OpenShift Platform Plus Components
+Step 1: Download the required binaries and tools
+
+# Switch to the ocp-plus user
+sudo su - ocp-plus
+
+# Set up environment variables
+export OCP_PLUS_VERSION="4.14"
+export INSTALL_DIR="/opt/openshift-platform-plus"
+
+# Download OpenShift CLI tools
+cd $INSTALL_DIR
+wget https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+tar -xzf openshift-client-linux.tar.gz
+sudo mv oc kubectl /usr/local/bin/
+sudo chmod +x /usr/local/bin/oc /usr/local/bin/kubectl
+Step 2: Install Advanced Cluster Management (ACM) operator components
+
+# Create configuration directory
+mkdir -p $INSTALL_DIR/config
+
+# Create ACM installation configuration
+cat > $INSTALL_DIR/config/acm-install.yaml << 'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-cluster-management
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: open-cluster-management
+  namespace: open-cluster-management
+spec:
+  targetNamespaces:
+  - open-cluster-management
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: advanced-cluster-management
+  namespace: open-cluster-management
+spec:
+  channel: release-2.9
+  installPlanApproval: Automatic
+  name: advanced-cluster-management
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+Subtask 1.3: Configure Local OpenShift Cluster
+Since we're working with open-source tools, we'll use CodeReady Containers (CRC) to simulate an OpenShift environment.
+
+Step 1: Install and configure CodeReady Containers
+
+# Download CRC
+cd $INSTALL_DIR
+wget https://developers.redhat.com/content-gateway/rest/mirror/pub/openshift-v4/clients/crc/latest/crc-linux-amd64.tar.xz
+tar -xf crc-linux-amd64.tar.xz
+sudo mv crc-linux-*/crc /usr/local/bin/
+sudo chmod +x /usr/local/bin/crc
+
+# Set up CRC
+crc setup
+crc config set memory 16384
+crc config set cpus 6
+Step 2: Start the local OpenShift cluster
+
+# Start CRC (this may take 10-15 minutes)
+crc start
+
+# Get cluster credentials
+crc console --credentials
+
+# Login to the cluster
+eval $(crc oc-env)
+oc login -u kubeadmin -p $(crc console --credentials | grep kubeadmin | awk '{print $3}')
+Subtask 1.4: Deploy Advanced Cluster Management Hub
+Step 1: Install the ACM operator
+
+# Apply the ACM installation configuration
+oc apply -f $INSTALL_DIR/config/acm-install.yaml
+
+# Wait for the operator to be ready
+oc wait --for=condition=Ready pod -l name=advanced-cluster-management-operator -n open-cluster-management --timeout=300s
+Step 2: Create MultiClusterHub instance
+
+# Create MultiClusterHub configuration
+cat > $INSTALL_DIR/config/multiclusterhub.yaml << 'EOF'
+apiVersion: operator.open-cluster-management.io/v1
+kind: MultiClusterHub
+metadata:
+  name: multiclusterhub
+  namespace: open-cluster-management
+spec:
+  availabilityConfig: Basic
+  enableClusterBackup: false
+  imagePullSecret: ""
+  ingress:
+    sslCiphers:
+    - ECDHE-ECDSA-AES256-GCM-SHA384
+    - ECDHE-RSA-AES256-GCM-SHA384
+    - ECDHE-ECDSA-AES128-GCM-SHA256
+    - ECDHE-RSA-AES128-GCM-SHA256
+  separateCertificateManagement: false
+EOF
+
+# Apply the configuration
+oc apply -f $INSTALL_DIR/config/multiclusterhub.yaml
+Step 3: Verify the installation
+
+# Check the status of MultiClusterHub
+oc get multiclusterhub -n open-cluster-management
+
+# Wait for all components to be ready
+oc wait --for=condition=Complete multiclusterhub/multiclusterhub -n open-cluster-management --timeout=1200s
+
+# Verify all pods are running
+oc get pods -n open-cluster-management
+Task 2: Connect Multiple Clusters to the Platform Plus Instance
+Subtask 2.1: Prepare Managed Cluster Environments
+For this lab, we'll simulate additional clusters using Kind (Kubernetes in Docker).
+
+Step 1: Install Kind on the system
+
+# Install Kind
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+sudo mv ./kind /usr/local/bin/kind
+sudo chmod +x /usr/local/bin/kind
+Step 2: Create simulated managed clusters
+
+# Create first managed cluster configuration
+cat > $INSTALL_DIR/config/cluster1-config.yaml << 'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: managed-cluster-1
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cluster=managed-cluster-1"
+EOF
+
+# Create second managed cluster configuration
+cat > $INSTALL_DIR/config/cluster2-config.yaml << 'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: managed-cluster-2
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "cluster=managed-cluster-2"
+EOF
+
+# Create the clusters
+kind create cluster --config $INSTALL_DIR/config/cluster1-config.yaml
+kind create cluster --config $INSTALL_DIR/config/cluster2-config.yaml
+Subtask 2.2: Import Managed Clusters
+Step 1: Create ManagedCluster resources
+
+# Switch back to the hub cluster context
+oc config use-context crc-admin
+
+# Create ManagedCluster for cluster 1
+cat > $INSTALL_DIR/config/managed-cluster-1.yaml << 'EOF'
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: managed-cluster-1
+  labels:
+    cloud: auto-detect
+    vendor: auto-detect
+    environment: development
+spec:
+  hubAcceptsClient: true
+EOF
+
+# Create ManagedCluster for cluster 2
+cat > $INSTALL_DIR/config/managed-cluster-2.yaml << 'EOF'
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: managed-cluster-2
+  labels:
+    cloud: auto-detect
+    vendor: auto-detect
+    environment: production
+spec:
+  hubAcceptsClient: true
+EOF
+
+# Apply the configurations
+oc apply -f $INSTALL_DIR/config/managed-cluster-1.yaml
+oc apply -f $INSTALL_DIR/config/managed-cluster-2.yaml
+Step 2: Generate and apply import manifests
+
+# Create import secrets for managed clusters
+oc get secret -n managed-cluster-1 managed-cluster-1-import -o yaml > $INSTALL_DIR/config/cluster1-import.yaml
+oc get secret -n managed-cluster-2 managed-cluster-2-import -o yaml > $INSTALL_DIR/config/cluster2-import.yaml
+
+# Apply import manifests to managed clusters
+kubectl config use-context kind-managed-cluster-1
+kubectl apply -f $INSTALL_DIR/config/cluster1-import.yaml
+
+kubectl config use-context kind-managed-cluster-2
+kubectl apply -f $INSTALL_DIR/config/cluster2-import.yaml
+Subtask 2.3: Configure Cluster Sets and Bindings
+Step 1: Create ManagedClusterSets
+
+# Switch back to hub cluster
+oc config use-context crc-admin
+
+# Create development cluster set
+cat > $INSTALL_DIR/config/dev-clusterset.yaml << 'EOF'
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSet
+metadata:
+  name: development
+spec:
+  clusterSelector:
+    selectorType: ExclusiveClusterSetLabel
+EOF
+
+# Create production cluster set
+cat > $INSTALL_DIR/config/prod-clusterset.yaml << 'EOF'
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSet
+metadata:
+  name: production
+spec:
+  clusterSelector:
+    selectorType: ExclusiveClusterSetLabel
+EOF
+
+# Apply cluster sets
+oc apply -f $INSTALL_DIR/config/dev-clusterset.yaml
+oc apply -f $INSTALL_DIR/config/prod-clusterset.yaml
+Step 2: Assign clusters to cluster sets
+
+# Label clusters for cluster set assignment
+oc label managedcluster managed-cluster-1 cluster.open-cluster-management.io/clusterset=development
+oc label managedcluster managed-cluster-2 cluster.open-cluster-management.io/clusterset=production
+
+# Verify cluster assignments
+oc get managedcluster --show-labels
+Task 3: Verify Installation Through the Web Interface
+Subtask 3.1: Access the OpenShift Platform Plus Console
+Step 1: Get console URL and credentials
+
+# Get the console URL
+echo "Console URL: $(oc get route multicloud-console -n open-cluster-management -o jsonpath='{.spec.host}')"
+
+# Get admin credentials
+echo "Username: kubeadmin"
+echo "Password: $(crc console --credentials | grep kubeadmin | awk '{print $3}')"
+Step 2: Access the web interface
+
+Open a web browser and navigate to the console URL
+Accept any SSL certificate warnings (this is expected in a lab environment)
+Log in using the kubeadmin credentials
+You should see the OpenShift Platform Plus dashboard
+Subtask 3.2: Navigate and Verify Cluster Management Features
+Step 1: Explore the Clusters view
+
+In the console, navigate to Infrastructure > Clusters
+Verify that you can see:
+The local hub cluster
+managed-cluster-1 (should show as "Ready")
+managed-cluster-2 (should show as "Ready")
+Click on each cluster to view detailed information
+Step 2: Verify Cluster Sets
+
+Navigate to Infrastructure > Cluster sets
+Confirm you can see:
+development cluster set with managed-cluster-1
+production cluster set with managed-cluster-2
+Click on each cluster set to view member clusters
+Subtask 3.3: Test Application Deployment Across Clusters
+Step 1: Create a sample application
+
+# Create application namespace
+oc create namespace sample-app
+
+# Create a simple deployment
+cat > $INSTALL_DIR/config/sample-app.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-openshift
+  namespace: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-openshift
+  template:
+    metadata:
+      labels:
+        app: hello-openshift
+    spec:
+      containers:
+      - name: hello-openshift
+        image: openshift/hello-openshift:latest
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-openshift
+  namespace: sample-app
+spec:
+  selector:
+    app: hello-openshift
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+EOF
+
+# Apply the application
+oc apply -f $INSTALL_DIR/config/sample-app.yaml
+Step 2: Create Application Set for multi-cluster deployment
+
+# Create ApplicationSet configuration
+cat > $INSTALL_DIR/config/applicationset.yaml << 'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: hello-openshift-appset
+  namespace: open-cluster-management
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchLabels:
+          environment: development
+  template:
+    metadata:
+      name: '{{name}}-hello-openshift'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/openshift/hello-openshift
+        targetRevision: HEAD
+        path: .
+      destination:
+        server: '{{server}}'
+        namespace: sample-app
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+EOF
+
+# Apply the ApplicationSet (if Argo CD is available)
+oc apply -f $INSTALL_DIR/config/applicationset.yaml
+Subtask 3.4: Monitor and Validate Cluster Health
+Step 1: Check cluster status through CLI
+
+# View all managed clusters
+oc get managedclusters
+
+# Check cluster conditions
+oc describe managedcluster managed-cluster-1
+oc describe managedcluster managed-cluster-2
+
+# View cluster add-ons
+oc get managedclusteraddons -A
+Step 2: Verify through the web console
+
+In the console, go to Overview dashboard
+Review the cluster health summary
+Check for any alerts or issues
+Navigate to Infrastructure > Clusters > Cluster details for each cluster
+Verify that all cluster components show as healthy
+Troubleshooting Common Issues
+Issue 1: CRC fails to start
+Solution:
+
+# Clean up and restart CRC
+crc stop
+crc delete
+crc cleanup
+crc setup
+crc start
+Issue 2: Managed clusters not appearing as "Ready"
+Solution:
+
+# Check import status
+oc get managedcluster -o yaml
+
+# Verify klusterlet pods on managed clusters
+kubectl config use-context kind-managed-cluster-1
+kubectl get pods -n open-cluster-management-agent
+
+# Restart klusterlet if needed
+kubectl delete pods -n open-cluster-management-agent --all
+Issue 3: Console not accessible
+Solution:
+
+# Check console route
+oc get route -n open-cluster-management
+
+# Verify console pods
+oc get pods -n open-cluster-management | grep console
+
+# Restart console pods if needed
+oc delete pods -n open-cluster-management -l app=console
+Conclusion
+Congratulations! You have successfully completed Lab 2: Install and Configure Red Hat OpenShift Platform Plus. In this comprehensive lab, you have accomplished the following:
+
+Key Achievements: • Installed OpenShift Platform Plus: You set up a complete multicluster management platform using open-source tools including CodeReady Containers and Advanced Cluster Management • Connected Multiple Clusters: You successfully created and connected two managed Kubernetes clusters to your Platform Plus hub, demonstrating the multicluster architecture • Verified Through Web Interface: You accessed and navigated the Platform Plus console, confirming proper installation and cluster connectivity • Configured Cluster Management: You organized clusters into logical sets (development and production) and applied governance policies
+
+Why This Matters: This lab provides hands-on experience with enterprise-grade multicluster Kubernetes management, which is essential for organizations running containerized applications across multiple environments. The skills you've developed here are directly applicable to real-world scenarios where you need to manage development, staging, and production clusters from a centralized location.
+
+Next Steps: With your OpenShift Platform Plus environment now operational, you're prepared to explore advanced topics such as: • Application lifecycle management across clusters • Policy-based governance and compliance • Disaster recovery and backup strategies • Advanced networking and security configurations
+
+The foundation you've built in this lab serves as the cornerstone for advanced multicluster management operations and prepares you for the Multicluster Management with Red Hat OpenShift Platform Plus certification.
