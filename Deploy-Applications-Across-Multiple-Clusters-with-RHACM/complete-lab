@@ -1,0 +1,582 @@
+Lab 7: Deploy Applications Across Multiple Clusters with RHACM
+Objectives
+By the end of this lab, you will be able to:
+
+Set up GitOps repositories for application configurations using ArgoCD and RHACM
+Deploy applications consistently across multiple OpenShift clusters using Red Hat Advanced Cluster Management (RHACM)
+Verify application consistency and health across all managed clusters
+Understand the principles of multi-cluster application deployment and management
+Implement GitOps workflows for enterprise-scale application delivery
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes and OpenShift concepts
+Familiarity with Git version control system
+Knowledge of YAML configuration files
+Understanding of containerized applications
+Basic command-line interface (CLI) experience
+Completed previous RHACM labs or equivalent knowledge
+Required Tools and Access
+Access to multiple OpenShift clusters (provided by Al Nafi cloud environment)
+RHACM installed and configured on the hub cluster
+Git repository access (GitHub or GitLab)
+OpenShift CLI (oc) tool
+ArgoCD CLI tool
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+Hub cluster with RHACM installed
+Two managed clusters (cluster-east and cluster-west)
+Pre-installed CLI tools (oc, argocd, git)
+Sample application code and configurations
+Task 1: Set up GitOps Repositories for Application Configurations
+Subtask 1.1: Create Application Repository Structure
+First, let's create a proper GitOps repository structure for our multi-cluster application deployment.
+
+Access your lab environment and open a terminal
+
+Create a new directory for your GitOps repository
+
+mkdir -p ~/multi-cluster-apps
+cd ~/multi-cluster-apps
+Initialize the Git repository
+git init
+git config user.name "Lab User"
+git config user.email "labuser@example.com"
+Create the directory structure for multi-cluster applications
+mkdir -p {applications,clusters,overlays}/{production,staging}
+mkdir -p base/sample-app
+mkdir -p argocd-apps
+Create the base application manifests
+Create the base deployment configuration:
+
+cat > base/sample-app/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-web-app
+  labels:
+    app: sample-web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-web-app
+  template:
+    metadata:
+      labels:
+        app: sample-web-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+EOF
+Create the service manifest
+cat > base/sample-app/service.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-web-app-service
+  labels:
+    app: sample-web-app
+spec:
+  selector:
+    app: sample-web-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+EOF
+Create the route manifest
+cat > base/sample-app/route.yaml << 'EOF'
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sample-web-app-route
+  labels:
+    app: sample-web-app
+spec:
+  to:
+    kind: Service
+    name: sample-web-app-service
+  port:
+    targetPort: 80
+EOF
+Create the kustomization file for the base
+cat > base/sample-app/kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- deployment.yaml
+- service.yaml
+- route.yaml
+
+commonLabels:
+  app.kubernetes.io/name: sample-web-app
+  app.kubernetes.io/version: "1.0"
+EOF
+Subtask 1.2: Create Cluster-Specific Overlays
+Now we'll create overlays for different clusters to demonstrate environment-specific configurations.
+
+Create overlay for the East cluster (Production)
+cat > overlays/production/kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: production-apps
+
+resources:
+- ../../base/sample-app
+
+patchesStrategicMerge:
+- deployment-patch.yaml
+
+commonLabels:
+  environment: production
+  cluster: east
+EOF
+Create the deployment patch for production
+cat > overlays/production/deployment-patch.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-web-app
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: web-app
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+EOF
+Create overlay for the West cluster (Staging)
+cat > overlays/staging/kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: staging-apps
+
+resources:
+- ../../base/sample-app
+
+patchesStrategicMerge:
+- deployment-patch.yaml
+
+commonLabels:
+  environment: staging
+  cluster: west
+EOF
+Create the deployment patch for staging
+cat > overlays/staging/deployment-patch.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-web-app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: web-app
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+EOF
+Subtask 1.3: Create ArgoCD Application Definitions
+Create ArgoCD Application for Production cluster
+cat > argocd-apps/production-app.yaml << 'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-production
+  namespace: openshift-gitops
+  labels:
+    environment: production
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/multi-cluster-apps.git
+    targetRevision: HEAD
+    path: overlays/production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production-apps
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+EOF
+Create ArgoCD Application for Staging cluster
+cat > argocd-apps/staging-app.yaml << 'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-staging
+  namespace: openshift-gitops
+  labels:
+    environment: staging
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/multi-cluster-apps.git
+    targetRevision: HEAD
+    path: overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging-apps
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+EOF
+Commit and push the repository structure
+git add .
+git commit -m "Initial GitOps repository structure for multi-cluster deployment"
+Note: In a real environment, you would push this to a remote Git repository. For this lab, we'll simulate this step.
+
+Task 2: Deploy Applications Across Multiple Clusters
+Subtask 2.1: Configure RHACM for Multi-Cluster Application Management
+Login to the OpenShift hub cluster
+oc login --server=https://api.hub-cluster.example.com:6443 --username=admin --password=admin123
+Verify RHACM installation and managed clusters
+oc get managedclusters
+Expected output should show your managed clusters:
+
+NAME           HUB ACCEPTED   MANAGED CLUSTER URLS   JOINED   AVAILABLE   AGE
+cluster-east   true                                  True     True        2d
+cluster-west   true                                  True     True        2d
+local-cluster  true                                  True     True        2d
+Create namespaces for application deployment
+oc create namespace multi-cluster-apps
+oc create namespace production-apps
+oc create namespace staging-apps
+Subtask 2.2: Create RHACM Application Resources
+Create a Channel resource for Git repository
+cat > channel.yaml << 'EOF'
+apiVersion: apps.open-cluster-management.io/v1
+kind: Channel
+metadata:
+  name: multi-cluster-apps-channel
+  namespace: multi-cluster-apps
+spec:
+  type: Git
+  pathname: https://github.com/your-username/multi-cluster-apps.git
+  secretRef:
+    name: git-secret
+EOF
+Apply the Channel resource
+oc apply -f channel.yaml
+Create PlacementRule for Production clusters
+cat > placement-production.yaml << 'EOF'
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: production-placement
+  namespace: multi-cluster-apps
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: production
+  clusterReplicas: 1
+EOF
+Create PlacementRule for Staging clusters
+cat > placement-staging.yaml << 'EOF'
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: staging-placement
+  namespace: multi-cluster-apps
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: staging
+  clusterReplicas: 1
+EOF
+Apply the PlacementRule resources
+oc apply -f placement-production.yaml
+oc apply -f placement-staging.yaml
+Subtask 2.3: Create RHACM Applications
+Create the Production Application
+cat > application-production.yaml << 'EOF'
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: sample-app-production
+  namespace: multi-cluster-apps
+spec:
+  componentKinds:
+  - group: apps.open-cluster-management.io
+    kind: Subscription
+  descriptor: {}
+  selector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - sample-app-production
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Subscription
+metadata:
+  name: sample-app-production-subscription
+  namespace: multi-cluster-apps
+  labels:
+    app: sample-app-production
+  annotations:
+    apps.open-cluster-management.io/git-path: overlays/production
+    apps.open-cluster-management.io/git-branch: main
+spec:
+  channel: multi-cluster-apps/multi-cluster-apps-channel
+  placement:
+    placementRef:
+      name: production-placement
+      kind: PlacementRule
+EOF
+Create the Staging Application
+cat > application-staging.yaml << 'EOF'
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: sample-app-staging
+  namespace: multi-cluster-apps
+spec:
+  componentKinds:
+  - group: apps.open-cluster-management.io
+    kind: Subscription
+  descriptor: {}
+  selector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - sample-app-staging
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Subscription
+metadata:
+  name: sample-app-staging-subscription
+  namespace: multi-cluster-apps
+  labels:
+    app: sample-app-staging
+  annotations:
+    apps.open-cluster-management.io/git-path: overlays/staging
+    apps.open-cluster-management.io/git-branch: main
+spec:
+  channel: multi-cluster-apps/multi-cluster-apps-channel
+  placement:
+    placementRef:
+      name: staging-placement
+      kind: PlacementRule
+EOF
+Deploy the applications
+oc apply -f application-production.yaml
+oc apply -f application-staging.yaml
+Subtask 2.4: Label Managed Clusters for Proper Placement
+Label the East cluster for production
+oc label managedcluster cluster-east environment=production
+Label the West cluster for staging
+oc label managedcluster cluster-west environment=staging
+Verify cluster labels
+oc get managedclusters --show-labels
+Task 3: Verify Application Consistency in All Clusters
+Subtask 3.1: Monitor Application Deployment Status
+Check the status of applications in RHACM
+oc get applications -n multi-cluster-apps
+Check subscription status
+oc get subscriptions -n multi-cluster-apps
+View detailed subscription information
+oc describe subscription sample-app-production-subscription -n multi-cluster-apps
+oc describe subscription sample-app-staging-subscription -n multi-cluster-apps
+Subtask 3.2: Verify Applications on Managed Clusters
+Switch context to the East cluster (Production)
+oc login --server=https://api.cluster-east.example.com:6443 --username=admin --password=admin123
+Verify the production application deployment
+oc get pods -n production-apps
+oc get services -n production-apps
+oc get routes -n production-apps
+Check deployment details
+oc describe deployment sample-web-app -n production-apps
+Expected output should show 3 replicas running with production resource limits.
+
+Switch context to the West cluster (Staging)
+oc login --server=https://api.cluster-west.example.com:6443 --username=admin --password=admin123
+Verify the staging application deployment
+oc get pods -n staging-apps
+oc get services -n staging-apps
+oc get routes -n staging-apps
+Check deployment details
+oc describe deployment sample-web-app -n staging-apps
+Expected output should show 1 replica running with staging resource limits.
+
+Subtask 3.3: Test Application Functionality
+Get the route URL for the production application
+oc login --server=https://api.cluster-east.example.com:6443 --username=admin --password=admin123
+PROD_URL=$(oc get route sample-web-app-route -n production-apps -o jsonpath='{.spec.host}')
+echo "Production URL: http://$PROD_URL"
+Test the production application
+curl -I http://$PROD_URL
+Get the route URL for the staging application
+oc login --server=https://api.cluster-west.example.com:6443 --username=admin --password=admin123
+STAGING_URL=$(oc get route sample-web-app-route -n staging-apps -o jsonpath='{.spec.host}')
+echo "Staging URL: http://$STAGING_URL"
+Test the staging application
+curl -I http://$STAGING_URL
+Subtask 3.4: Monitor Application Health from RHACM Console
+Switch back to the hub cluster
+oc login --server=https://api.hub-cluster.example.com:6443 --username=admin --password=admin123
+Check application health status
+oc get applications -n multi-cluster-apps -o wide
+View application topology and status
+oc get subscriptions -n multi-cluster-apps -o yaml | grep -A 5 -B 5 "phase\|message"
+Create a simple monitoring script
+cat > monitor-apps.sh << 'EOF'
+#!/bin/bash
+echo "=== Multi-Cluster Application Status ==="
+echo "Date: $(date)"
+echo ""
+
+echo "--- Applications ---"
+oc get applications -n multi-cluster-apps
+
+echo ""
+echo "--- Subscriptions ---"
+oc get subscriptions -n multi-cluster-apps
+
+echo ""
+echo "--- Placement Rules ---"
+oc get placementrules -n multi-cluster-apps
+
+echo ""
+echo "--- Managed Clusters ---"
+oc get managedclusters
+EOF
+
+chmod +x monitor-apps.sh
+./monitor-apps.sh
+Subtask 3.5: Test Application Updates and Consistency
+Update the application configuration in Git
+cd ~/multi-cluster-apps
+Modify the base deployment to change the image version
+sed -i 's/nginx:1.21/nginx:1.22/g' base/sample-app/deployment.yaml
+Commit the changes
+git add .
+git commit -m "Update nginx version to 1.22"
+Wait for automatic synchronization and verify updates
+# Wait for sync (in real environment, this would be automatic)
+sleep 30
+
+# Check if applications are updated
+oc get subscriptions -n multi-cluster-apps -o yaml | grep -A 10 -B 5 "lastUpdateTime"
+Verify the update was applied to both clusters
+# Check production cluster
+oc login --server=https://api.cluster-east.example.com:6443 --username=admin --password=admin123
+oc describe deployment sample-web-app -n production-apps | grep Image
+
+# Check staging cluster  
+oc login --server=https://api.cluster-west.example.com:6443 --username=admin --password=admin123
+oc describe deployment sample-web-app -n staging-apps | grep Image
+Troubleshooting Common Issues
+Issue 1: Application Not Deploying to Target Clusters
+Symptoms: Subscriptions show as created but applications don't appear on managed clusters.
+
+Solution:
+
+# Check placement rule status
+oc describe placementrule production-placement -n multi-cluster-apps
+
+# Verify cluster labels match placement rule selectors
+oc get managedclusters --show-labels
+
+# Check subscription events
+oc describe subscription sample-app-production-subscription -n multi-cluster-apps
+Issue 2: Git Repository Access Issues
+Symptoms: Channel shows connection errors or authentication failures.
+
+Solution:
+
+# Verify channel status
+oc describe channel multi-cluster-apps-channel -n multi-cluster-apps
+
+# Check if git secret exists and is properly configured
+oc get secrets -n multi-cluster-apps | grep git
+Issue 3: Resource Conflicts
+Symptoms: Applications fail to deploy due to existing resources.
+
+Solution:
+
+# Clean up existing resources
+oc delete all -l app=sample-web-app -n production-apps
+oc delete all -l app=sample-web-app -n staging-apps
+
+# Redeploy applications
+oc delete subscription sample-app-production-subscription -n multi-cluster-apps
+oc delete subscription sample-app-staging-subscription -n multi-cluster-apps
+oc apply -f application-production.yaml
+oc apply -f application-staging.yaml
+Best Practices for Multi-Cluster Application Deployment
+1. Repository Structure
+Use clear directory structures separating base configurations from overlays
+Implement proper branching strategies (main for production, develop for staging)
+Use semantic versioning for application releases
+2. Security Considerations
+Use separate service accounts for different environments
+Implement proper RBAC policies for each cluster
+Secure Git repository access with appropriate authentication
+3. Monitoring and Observability
+Implement health checks for all deployed applications
+Set up monitoring dashboards for multi-cluster visibility
+Configure alerting for application failures or inconsistencies
+4. Disaster Recovery
+Maintain backup strategies for application configurations
+Test failover scenarios between clusters
+Document recovery procedures for each environment
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Created a GitOps repository structure that supports multi-cluster application deployment with environment-specific configurations
+Deployed applications across multiple OpenShift clusters using RHACM's powerful application management capabilities
+Verified application consistency across different environments while maintaining appropriate resource allocation for each cluster
+Implemented automated synchronization that ensures applications stay up-to-date across all managed clusters
+Key Achievements
+GitOps Implementation: You've established a robust GitOps workflow that serves as the single source of truth for your multi-cluster applications
+Multi-Cluster Management: You've leveraged RHACM to manage applications across geographically distributed clusters with different configurations
+Environment Segregation: You've successfully implemented production and staging environments with appropriate resource allocation and deployment strategies
+Automated Operations: You've configured automatic synchronization and self-healing capabilities that reduce manual intervention
+Why This Matters
+Multi-cluster application deployment is crucial for modern enterprise environments because it:
+
+Ensures High Availability: Applications can continue running even if one cluster fails
+Enables Geographic Distribution: Applications can be deployed closer to users for better performance
+Supports Environment Isolation: Production and non-production workloads can be completely separated
+Facilitates Compliance: Different clusters can meet different regulatory requirements
+Reduces Risk: Changes can be tested in staging environments before production deployment
+This lab has provided you with practical experience in enterprise-grade application deployment patterns that are essential for managing containerized applications at scale. The skills you've developed here are directly applicable to real-world scenarios where organizations need to maintain consistent application deployments across multiple Kubernetes clusters while ensuring reliability, security, and operational efficiency.
+
+The combination of RHACM and GitOps practices you've implemented represents industry best practices for multi-cluster application lifecycle management, making you well-prepared for advanced OpenShift administration and multicluster management challenges.
