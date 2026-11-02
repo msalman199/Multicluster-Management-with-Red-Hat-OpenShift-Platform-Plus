@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-compliant-test
+  labels:
+    environment: development
+    team: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-compliant-test
+  template:
+    metadata:
+      labels:
+        app: policy-compliant-test
+        environment: development
+        team: platform
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21

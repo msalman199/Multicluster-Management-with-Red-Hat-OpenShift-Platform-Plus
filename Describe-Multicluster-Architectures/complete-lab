@@ -1,0 +1,929 @@
+Lab 1: Describe Multicluster Architectures
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the fundamental concepts and challenges of multicluster environments
+Identify the key problems organizations face when managing multiple Kubernetes clusters
+Explore how Red Hat OpenShift Platform Plus addresses multicluster management challenges
+Analyze the benefits of centralized management, security, and scalability in multicluster architectures
+Evaluate different multicluster deployment patterns and their use cases
+Implement basic multicluster management concepts using open-source tools
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with container orchestration principles
+Knowledge of Linux command line operations
+Understanding of networking fundamentals
+Basic experience with YAML configuration files
+Familiarity with kubectl command-line tool
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your pre-configured environment. No need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+Ubuntu 20.04 LTS with kubectl pre-installed
+Kind (Kubernetes in Docker) for creating local clusters
+Helm package manager
+Git for version control
+Text editors (vim, nano)
+Task 1: Learn the Challenges of Multicluster Environments
+Subtask 1.1: Understanding Multicluster Architecture Fundamentals
+What is a Multicluster Architecture?
+
+A multicluster architecture involves managing multiple Kubernetes clusters across different environments, regions, or cloud providers. This approach provides benefits like improved resilience, compliance, and resource optimization.
+
+Step 1: Access Your Lab Environment
+Click Start Lab to access your cloud machine
+Open a terminal window
+Verify your environment setup:
+# Check kubectl version
+kubectl version --client
+
+# Check Kind installation
+kind version
+
+# Check available resources
+free -h
+df -h
+Step 2: Create Multiple Local Clusters to Simulate Multicluster Environment
+Let's create three clusters to represent different environments: development, staging, and production.
+
+# Create development cluster
+cat << EOF > dev-cluster-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: dev-cluster
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=development"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=development"
+EOF
+
+# Create staging cluster
+cat << EOF > staging-cluster-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: staging-cluster
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=staging"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=staging"
+EOF
+
+# Create production cluster
+cat << EOF > prod-cluster-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: prod-cluster
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=production"
+- role: worker
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "environment=production"
+EOF
+Step 3: Deploy the Clusters
+# Create all three clusters
+kind create cluster --config dev-cluster-config.yaml
+kind create cluster --config staging-cluster-config.yaml
+kind create cluster --config prod-cluster-config.yaml
+
+# Verify clusters are running
+kind get clusters
+
+# List all contexts
+kubectl config get-contexts
+Subtask 1.2: Identifying Common Multicluster Challenges
+Step 4: Experience Configuration Management Complexity
+Let's deploy the same application across all three clusters and observe the challenges:
+
+# Create a sample application manifest
+cat << EOF > sample-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  selector:
+    app: web-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+EOF
+Step 5: Deploy to Each Cluster Individually
+# Deploy to development cluster
+kubectl config use-context kind-dev-cluster
+kubectl apply -f sample-app.yaml
+kubectl get pods -o wide
+
+# Deploy to staging cluster
+kubectl config use-context kind-staging-cluster
+kubectl apply -f sample-app.yaml
+kubectl get pods -o wide
+
+# Deploy to production cluster
+kubectl config use-context kind-prod-cluster
+kubectl apply -f sample-app.yaml
+kubectl get pods -o wide
+Step 6: Document the Challenges Observed
+Create a challenges log file:
+
+cat << EOF > multicluster-challenges.md
+# Multicluster Management Challenges Observed
+
+## 1. Configuration Drift
+- Each cluster requires individual deployment commands
+- Risk of inconsistent configurations across environments
+- Manual process prone to human error
+
+## 2. Operational Complexity
+- Need to switch contexts for each cluster operation
+- Difficult to get unified view of application status
+- Troubleshooting requires checking multiple clusters individually
+
+## 3. Security Management
+- Each cluster has separate RBAC configurations
+- Network policies must be managed independently
+- Certificate management becomes complex
+
+## 4. Resource Visibility
+- No centralized monitoring across clusters
+- Resource utilization tracking is fragmented
+- Cost management becomes challenging
+
+## 5. Compliance and Governance
+- Policy enforcement must be replicated across clusters
+- Audit trails are scattered
+- Compliance reporting requires data aggregation from multiple sources
+EOF
+
+cat multicluster-challenges.md
+Subtask 1.3: Analyzing Network and Security Challenges
+Step 7: Explore Cross-Cluster Communication Challenges
+# Create a script to test cross-cluster connectivity
+cat << EOF > test-connectivity.sh
+#!/bin/bash
+
+echo "Testing cross-cluster connectivity challenges..."
+
+# Get cluster information
+echo "=== Development Cluster ==="
+kubectl config use-context kind-dev-cluster
+kubectl cluster-info
+kubectl get nodes -o wide
+
+echo "=== Staging Cluster ==="
+kubectl config use-context kind-staging-cluster
+kubectl cluster-info
+kubectl get nodes -o wide
+
+echo "=== Production Cluster ==="
+kubectl config use-context kind-prod-cluster
+kubectl cluster-info
+kubectl get nodes -o wide
+
+echo "=== Challenge: Clusters are isolated ==="
+echo "Services in one cluster cannot directly communicate with services in another cluster"
+echo "This requires additional networking solutions like service mesh or VPN"
+EOF
+
+chmod +x test-connectivity.sh
+./test-connectivity.sh
+Task 2: Study How OpenShift Platform Plus Provides Centralized Management, Security, and Scalability
+Subtask 2.1: Understanding OpenShift Platform Plus Architecture
+Step 8: Explore Centralized Management Concepts
+Create a conceptual diagram of OpenShift Platform Plus architecture:
+
+cat << EOF > openshift-plus-architecture.md
+# OpenShift Platform Plus Multicluster Architecture
+
+## Core Components
+
+### 1. Red Hat Advanced Cluster Management (RHACM)
+- **Hub Cluster**: Central management cluster
+- **Managed Clusters**: Target clusters being managed
+- **Klusterlet**: Agent running on managed clusters
+
+### 2. Red Hat Advanced Cluster Security (RHACS)
+- **Central**: Security management console
+- **Sensor**: Security monitoring on each cluster
+- **Collector**: Runtime data collection
+
+### 3. Red Hat Quay
+- **Container Registry**: Centralized image management
+- **Security Scanning**: Vulnerability assessment
+- **Image Signing**: Supply chain security
+
+## Key Benefits
+
+### Centralized Management
+- Single pane of glass for all clusters
+- Unified application lifecycle management
+- Centralized policy enforcement
+
+### Enhanced Security
+- Continuous security monitoring
+- Policy-as-code implementation
+- Compliance reporting and remediation
+
+### Improved Scalability
+- Automated cluster provisioning
+- Resource optimization across clusters
+- Workload placement intelligence
+EOF
+
+cat openshift-plus-architecture.md
+Subtask 2.2: Implementing Basic Centralized Management with Open Source Tools
+Step 9: Install and Configure ArgoCD for GitOps Management
+ArgoCD provides centralized application management across multiple clusters:
+
+# Switch to development cluster for ArgoCD installation
+kubectl config use-context kind-dev-cluster
+
+# Create ArgoCD namespace
+kubectl create namespace argocd
+
+# Install ArgoCD
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Wait for ArgoCD to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+
+# Get ArgoCD admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d > argocd-password.txt
+echo "ArgoCD admin password saved to argocd-password.txt"
+
+# Port forward to access ArgoCD UI (run in background)
+kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+Step 10: Configure Multi-Cluster Access in ArgoCD
+# Create cluster secrets for staging and production
+# First, get the staging cluster config
+kubectl config use-context kind-staging-cluster
+STAGING_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+STAGING_CA=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+
+# Get service account token for staging
+kubectl create serviceaccount argocd-manager -n kube-system
+kubectl create clusterrolebinding argocd-manager-binding --clusterrole=cluster-admin --serviceaccount=kube-system:argocd-manager
+
+# Create token for staging cluster
+cat << EOF > staging-cluster-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: staging-cluster-secret
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: staging-cluster
+  server: ${STAGING_SERVER}
+  config: |
+    {
+      "bearerToken": "$(kubectl create token argocd-manager -n kube-system)",
+      "tlsClientConfig": {
+        "insecure": true
+      }
+    }
+EOF
+
+# Apply to ArgoCD cluster (development)
+kubectl config use-context kind-dev-cluster
+kubectl apply -f staging-cluster-secret.yaml
+Step 11: Create a GitOps Application Configuration
+# Create application configuration for multi-cluster deployment
+cat << EOF > multicluster-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: web-app-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: web-app-staging
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook
+  destination:
+    server: ${STAGING_SERVER}
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
+
+kubectl apply -f multicluster-app.yaml
+Subtask 2.3: Implementing Security Policies Across Clusters
+Step 12: Deploy Open Policy Agent (OPA) Gatekeeper
+# Install Gatekeeper on all clusters
+for cluster in dev-cluster staging-cluster prod-cluster; do
+    echo "Installing Gatekeeper on $cluster"
+    kubectl config use-context kind-$cluster
+    
+    # Install Gatekeeper
+    kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/release-3.14/deploy/gatekeeper.yaml
+    
+    # Wait for Gatekeeper to be ready
+    kubectl wait --for=condition=available --timeout=300s deployment/gatekeeper-controller-manager -n gatekeeper-system
+done
+Step 13: Create and Apply Security Policies
+# Create a constraint template for required labels
+cat << EOF > required-labels-template.yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+        
+        violation[{"msg": msg}] {
+          required := input.parameters.labels
+          provided := input.review.object.metadata.labels
+          missing := required[_]
+          not provided[missing]
+          msg := sprintf("Missing required label: %v", [missing])
+        }
+EOF
+
+# Create constraint for environment labeling
+cat << EOF > environment-labels-constraint.yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: must-have-environment
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+  parameters:
+    labels: ["environment", "team"]
+EOF
+
+# Apply policies to all clusters
+for cluster in dev-cluster staging-cluster prod-cluster; do
+    echo "Applying security policies to $cluster"
+    kubectl config use-context kind-$cluster
+    kubectl apply -f required-labels-template.yaml
+    kubectl apply -f environment-labels-constraint.yaml
+done
+Step 14: Test Policy Enforcement
+# Create a deployment that violates the policy
+cat << EOF > policy-violation-test.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-test
+  template:
+    metadata:
+      labels:
+        app: policy-test
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+EOF
+
+# Try to apply to development cluster (should fail)
+kubectl config use-context kind-dev-cluster
+echo "Testing policy violation (should fail):"
+kubectl apply -f policy-violation-test.yaml
+
+# Create compliant deployment
+cat << EOF > policy-compliant-test.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-compliant-test
+  labels:
+    environment: development
+    team: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-compliant-test
+  template:
+    metadata:
+      labels:
+        app: policy-compliant-test
+        environment: development
+        team: platform
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+EOF
+
+echo "Testing compliant deployment (should succeed):"
+kubectl apply -f policy-compliant-test.yaml
+Subtask 2.4: Implementing Monitoring and Observability
+Step 15: Deploy Prometheus for Multi-Cluster Monitoring
+# Install Prometheus on the hub cluster (development)
+kubectl config use-context kind-dev-cluster
+
+# Add Prometheus Helm repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Install Prometheus with federation configuration
+cat << EOF > prometheus-values.yaml
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  extraArgs:
+    web.enable-lifecycle: true
+    web.enable-admin-api: true
+  
+serverFiles:
+  prometheus.yml:
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+        - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+      
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+        - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/\${1}/proxy/metrics
+EOF
+
+# Install Prometheus
+helm install prometheus prometheus-community/prometheus -f prometheus-values.yaml
+
+# Wait for Prometheus to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/prometheus-server
+Step 16: Create Multi-Cluster Monitoring Dashboard
+# Create a script to collect metrics from all clusters
+cat << EOF > multicluster-metrics.sh
+#!/bin/bash
+
+echo "=== Multi-Cluster Resource Usage Report ==="
+echo "Generated at: \$(date)"
+echo ""
+
+for cluster in dev-cluster staging-cluster prod-cluster; do
+    echo "=== \$cluster ==="
+    kubectl config use-context kind-\$cluster
+    
+    echo "Nodes:"
+    kubectl get nodes -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,ROLES:.metadata.labels.node-role\\.kubernetes\\.io/control-plane,AGE:.metadata.creationTimestamp
+    
+    echo ""
+    echo "Resource Usage:"
+    kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+    
+    echo ""
+    echo "Pods by Namespace:"
+    kubectl get pods --all-namespaces --no-headers | awk '{print \$1}' | sort | uniq -c | sort -nr
+    
+    echo ""
+    echo "Services:"
+    kubectl get services --all-namespaces --no-headers | wc -l
+    echo "Total Services: \$(kubectl get services --all-namespaces --no-headers | wc -l)"
+    
+    echo ""
+    echo "Deployments:"
+    kubectl get deployments --all-namespaces --no-headers | wc -l
+    echo "Total Deployments: \$(kubectl get deployments --all-namespaces --no-headers | wc -l)"
+    
+    echo ""
+    echo "----------------------------------------"
+    echo ""
+done
+EOF
+
+chmod +x multicluster-metrics.sh
+./multicluster-metrics.sh
+Task 3: Evaluate Multicluster Management Solutions
+Subtask 3.1: Compare Management Approaches
+Step 17: Create Comparison Matrix
+cat << EOF > management-comparison.md
+# Multicluster Management Approaches Comparison
+
+## Manual Management vs. Centralized Management
+
+| Aspect | Manual Management | OpenShift Platform Plus | Open Source Alternative |
+|--------|------------------|-------------------------|------------------------|
+| **Deployment** | Individual kubectl commands | GitOps with RHACM | ArgoCD + Flux |
+| **Security** | Per-cluster RBAC | Centralized RHACS | OPA Gatekeeper + Falco |
+| **Monitoring** | Separate dashboards | Unified ACM console | Prometheus Federation |
+| **Policy Management** | Manual replication | Policy-as-code | OPA + Kustomize |
+| **Compliance** | Manual auditing | Automated compliance | Custom scripts + policies |
+| **Cost** | Time-intensive | License cost | Infrastructure cost |
+| **Complexity** | High operational overhead | Simplified operations | Moderate complexity |
+
+## Key Findings from Lab Experience
+
+### Challenges Identified:
+1. **Configuration Drift**: Manual deployments led to inconsistencies
+2. **Operational Overhead**: Context switching between clusters
+3. **Security Gaps**: Difficult to maintain consistent security policies
+4. **Monitoring Fragmentation**: No unified view of cluster health
+
+### Solutions Implemented:
+1. **GitOps with ArgoCD**: Centralized application deployment
+2. **Policy Enforcement**: OPA Gatekeeper for consistent security
+3. **Monitoring Federation**: Prometheus for unified metrics
+4. **Automation**: Scripts for repetitive tasks
+
+### Benefits Realized:
+1. **Consistency**: Automated deployments reduce human error
+2. **Visibility**: Centralized monitoring improves observability
+3. **Security**: Policy-as-code ensures compliance
+4. **Efficiency**: Reduced operational overhead
+EOF
+
+cat management-comparison.md
+Subtask 3.2: Document Best Practices
+Step 18: Create Best Practices Guide
+cat << EOF > multicluster-best-practices.md
+# Multicluster Management Best Practices
+
+## 1. Architecture Design Principles
+
+### Hub and Spoke Model
+- Designate one cluster as the management hub
+- Use lightweight agents on managed clusters
+- Implement secure communication channels
+
+### Network Segmentation
+- Isolate clusters by environment (dev/staging/prod)
+- Implement proper firewall rules
+- Use service mesh for secure inter-cluster communication
+
+## 2. Security Best Practices
+
+### Identity and Access Management
+- Implement centralized authentication (OIDC/LDAP)
+- Use service accounts for automation
+- Apply principle of least privilege
+
+### Policy Management
+- Define policies as code
+- Implement admission controllers
+- Regular security scanning and compliance checks
+
+### Network Security
+- Use network policies to restrict traffic
+- Implement mutual TLS for service communication
+- Regular certificate rotation
+
+## 3. Operational Best Practices
+
+### GitOps Workflow
+- Store all configurations in Git
+- Implement automated testing pipelines
+- Use pull-based deployment models
+
+### Monitoring and Alerting
+- Implement comprehensive monitoring
+- Set up proactive alerting
+- Create runbooks for common issues
+
+### Disaster Recovery
+- Regular backup procedures
+- Test recovery processes
+- Document recovery procedures
+
+## 4. Governance and Compliance
+
+### Resource Management
+- Implement resource quotas and limits
+- Monitor resource utilization
+- Implement cost allocation and chargeback
+
+### Compliance Monitoring
+- Automated compliance scanning
+- Regular audit procedures
+- Maintain compliance documentation
+
+## 5. Performance Optimization
+
+### Resource Optimization
+- Right-size cluster resources
+- Implement horizontal pod autoscaling
+- Use cluster autoscaling where appropriate
+
+### Network Optimization
+- Optimize inter-cluster communication
+- Implement caching strategies
+- Monitor network latency and throughput
+EOF
+
+cat multicluster-best-practices.md
+Task 4: Cleanup and Documentation
+Subtask 4.1: Clean Up Lab Environment
+Step 19: Remove Created Resources
+# Create cleanup script
+cat << EOF > cleanup-lab.sh
+#!/bin/bash
+
+echo "Cleaning up multicluster lab environment..."
+
+# Stop port forwarding processes
+pkill -f "kubectl port-forward"
+
+# Delete Kind clusters
+echo "Deleting Kind clusters..."
+kind delete cluster --name dev-cluster
+kind delete cluster --name staging-cluster
+kind delete cluster --name prod-cluster
+
+# Remove configuration files
+echo "Removing configuration files..."
+rm -f dev-cluster-config.yaml
+rm -f staging-cluster-config.yaml
+rm -f prod-cluster-config.yaml
+rm -f sample-app.yaml
+rm -f staging-cluster-secret.yaml
+rm -f multicluster-app.yaml
+rm -f required-labels-template.yaml
+rm -f environment-labels-constraint.yaml
+rm -f policy-violation-test.yaml
+rm -f policy-compliant-test.yaml
+rm -f prometheus-values.yaml
+rm -f argocd-password.txt
+
+echo "Cleanup completed!"
+EOF
+
+chmod +x cleanup-lab.sh
+Subtask 4.2: Create Lab Summary Report
+Step 20: Generate Final Report
+cat << EOF > lab-summary-report.md
+# Lab 1: Multicluster Architectures - Summary Report
+
+## Lab Completion Summary
+
+### Objectives Achieved ✓
+- [x] Understood multicluster architecture concepts
+- [x] Identified key challenges in multicluster environments
+- [x] Explored OpenShift Platform Plus solutions
+- [x] Implemented open-source alternatives
+- [x] Created centralized management workflows
+- [x] Implemented security policies across clusters
+- [x] Set up monitoring and observability
+
+### Key Learning Outcomes
+
+#### 1. Multicluster Challenges Identified
+- **Configuration Drift**: Manual processes lead to inconsistencies
+- **Operational Complexity**: Managing multiple contexts is error-prone
+- **Security Fragmentation**: Policies must be replicated across clusters
+- **Monitoring Gaps**: Lack of unified visibility
+
+#### 2. Solutions Implemented
+- **ArgoCD**: GitOps-based application deployment
+- **OPA Gatekeeper**: Policy enforcement across clusters
+- **Prometheus**: Federated monitoring setup
+- **Automation Scripts**: Reduced manual operations
+
+#### 3. OpenShift Platform Plus Value Proposition
+- **Centralized Management**: Single pane of glass
+- **Enhanced Security**: Integrated security scanning and policies
+- **Operational Efficiency**: Reduced complexity and overhead
+- **Enterprise Support**: Professional support and maintenance
+
+### Technical Skills Developed
+- Multi-cluster Kubernetes management
+- GitOps workflow implementation
+- Policy-as-code development
+- Monitoring and observability setup
+- Security policy enforcement
+
+### Next Steps for Further Learning
+1. Explore service mesh implementations (Istio/Linkerd)
+2. Implement advanced GitOps patterns
+3. Study disaster recovery strategies
+4. Learn about multi-cloud deployments
+5. Investigate cost optimization techniques
+
+### Tools and Technologies Used
+- **Kubernetes**: Container orchestration
+- **Kind**: Local cluster creation
+- **ArgoCD**: GitOps continuous delivery
+- **OPA Gatekeeper**: Policy enforcement
+- **Prometheus**: Monitoring and metrics
+- **Helm**: Package management
+
+### Time Investment
+- Total Lab Time: Approximately 2-3 hours
+- Setup Time: 30 minutes
+- Implementation Time: 90 minutes
+- Documentation Time: 30 minutes
+
+### Difficulty Assessment
+- **Complexity Level**: Advanced
+- **Prerequisites Met**: ✓
+- **Hands-on Experience**: Extensive
+- **Real-world Applicability**: High
+EOF
+
+cat lab-summary-report.md
+Troubleshooting Guide
+Common Issues and Solutions
+Issue 1: Kind Clusters Not Starting
+Symptoms: Cluster creation fails or times out Solution:
+
+# Check Docker is running
+sudo systemctl status docker
+
+# Increase Docker resources if needed
+# Check available disk space
+df -h
+
+# Clean up Docker if needed
+docker system prune -f
+Issue 2: ArgoCD Installation Fails
+Symptoms: ArgoCD pods not starting Solution:
+
+# Check cluster resources
+kubectl top nodes
+kubectl describe nodes
+
+# Check ArgoCD pod logs
+kubectl logs -n argocd deployment/argocd-server
+Issue 3: Policy Enforcement Not Working
+Symptoms: Gatekeeper not blocking non-compliant resources Solution:
+
+# Check Gatekeeper status
+kubectl get pods -n gatekeeper-system
+
+# Verify constraint template
+kubectl get constrainttemplates
+
+# Check constraint status
+kubectl describe k8srequiredlabels must-have-environment
+Issue 4: Prometheus Not Collecting Metrics
+Symptoms: No metrics visible in Prometheus Solution:
+
+# Check Prometheus pod status
+kubectl get pods -l app=prometheus
+
+# Check Prometheus configuration
+kubectl logs deployment/prometheus-server
+
+# Verify service discovery
+kubectl get endpoints
+Conclusion
+In this comprehensive lab, you have successfully explored the complexities and solutions associated with multicluster Kubernetes architectures. You've gained hands-on experience with the challenges organizations face when managing multiple clusters and learned how both commercial solutions like Red Hat OpenShift Platform Plus and open-source alternatives can address these challenges.
+
+Key Accomplishments
+Practical Understanding: You've experienced firsthand the operational overhead and complexity of managing multiple Kubernetes clusters manually.
+
+Solution Implementation: You've implemented centralized management using GitOps principles with ArgoCD, demonstrating how automation can reduce complexity and improve consistency.
+
+Security Integration: You've deployed and configured policy enforcement using OPA Gatekeeper, showing how security can be standardized across multiple clusters.
+
+Monitoring Setup: You've established monitoring capabilities using Prometheus, providing visibility across your multicluster environment.
+
+Best Practices Documentation: You've created comprehensive documentation covering architecture patterns, security practices, and operational procedures.
+
+Why This Matters
+Multicluster management is becoming increasingly important as organizations adopt cloud-native technologies at scale. The skills you've developed in this lab are directly applicable to real-world scenarios where:
+
+Enterprises need to manage applications across multiple environments (dev, staging, production)
+Multi-cloud strategies require consistent management across different cloud providers
+Compliance requirements demand standardized security policies and audit capabilities
+Global deployments need regional cluster management for performance and data sovereignty
+Real-World Impact
+The concepts and tools you've worked with in this lab form the foundation of modern cloud-native operations. Organizations using these approaches typically see:
+
+50-70% reduction in operational overhead
+Improved security posture through consistent policy enforcement
+Faster deployment cycles through automation
+Better compliance through policy-as-code approaches
+Enhanced visibility through centralized monitoring
+This lab has prepared you with practical skills that are highly valued in the current job market, particularly for roles in DevOps, Site Reliability Engineering, Platform Engineering, and Cloud Architecture.
+
+Continue building on these foundations by exploring advanced topics like service mesh integration, advanced GitOps patterns, and enterprise-scale cluster management strategies.
