@@ -1,0 +1,70 @@
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  name: rhacm-resource-utilization
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-grafana
+spec:
+  grafana:
+    name: rhacm-grafana
+    namespace: rhacm-observability
+  json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "RHACM Resource Utilization",
+        "tags": ["rhacm", "resources"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "CPU Usage by Cluster",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "avg by (cluster) (cpu_usage_percent)",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {"label": "CPU %", "max": 100, "min": 0}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Memory Usage by Cluster",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "avg by (cluster) (memory_usage_percent)",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {"label": "Memory %", "max": 100, "min": 0}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Network I/O",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(network_bytes_total[5m])",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-6h",
+          "to": "now"
+        },
+        "refresh": "1m"
+      }
+    }

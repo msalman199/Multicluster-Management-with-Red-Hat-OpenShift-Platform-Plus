@@ -1,0 +1,55 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rhacm-alerts
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  groups:
+  - name: rhacm.cluster.rules
+    rules:
+    - alert: ManagedClusterDown
+      expr: cluster_status == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Managed cluster {{ $labels.cluster }} is down"
+        description: "Managed cluster {{ $labels.cluster }} has been down for more than 5 minutes."
+    
+    - alert: HighCPUUsage
+      expr: avg by (cluster) (cpu_usage_percent) > 80
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage on cluster {{ $labels.cluster }}"
+        description: "CPU usage on cluster {{ $labels.cluster }} is above 80% for more than 10 minutes."
+    
+    - alert: HighMemoryUsage
+      expr: avg by (cluster) (memory_usage_percent) > 85
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage on cluster {{ $labels.cluster }}"
+        description: "Memory usage on cluster {{ $labels.cluster }} is above 85% for more than 10 minutes."
+    
+    - alert: ApplicationDeploymentFailed
+      expr: application_status{status="failed"} == 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Application deployment failed"
+        description: "Application {{ $labels.application }} deployment failed on cluster {{ $labels.cluster }}."
+    
+    - alert: PolicyViolation
+      expr: policy_violation_count > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Policy violation detected"
+        description: "{{ $value }} policy violations detected on cluster {{ $labels.cluster }}."

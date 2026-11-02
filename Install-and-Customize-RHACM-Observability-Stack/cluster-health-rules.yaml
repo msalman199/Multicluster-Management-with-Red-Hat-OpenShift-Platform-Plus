@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-health-alerts
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  groups:
+  - name: cluster.health.rules
+    rules:
+    - alert: ClusterNodeNotReady
+      expr: cluster_node_status{status="NotReady"} == 1
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Cluster node not ready"
+        description: "Node {{ $labels.node }} in cluster {{ $labels.cluster }} is not ready for more than 5 minutes."
+    
+    - alert: PodCrashLooping
+      expr: increase(pod_restart_count[1h]) > 5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod crash looping"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is crash looping."
+    
+    - alert: PersistentVolumeUsageHigh
+      expr: pv_usage_percent > 90
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Persistent volume usage high"
+        description: "Persistent volume {{ $labels.pv }} usage is above 90%."

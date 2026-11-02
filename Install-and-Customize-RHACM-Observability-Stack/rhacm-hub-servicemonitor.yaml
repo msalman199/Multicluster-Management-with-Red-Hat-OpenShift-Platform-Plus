@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rhacm-hub-metrics
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  selector:
+    matchLabels:
+      app: multicluster-operators-hub-subscription
+  endpoints:
+  - port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - open-cluster-management

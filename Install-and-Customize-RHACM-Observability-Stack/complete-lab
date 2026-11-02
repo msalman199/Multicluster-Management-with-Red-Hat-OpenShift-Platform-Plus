@@ -1,0 +1,894 @@
+Lab 5: Install and Customize RHACM Observability Stack
+Objectives
+By the end of this lab, you will be able to:
+
+• Install and configure Prometheus for cluster monitoring and metrics collection • Deploy and customize Grafana dashboards for visualizing cluster performance data • Set up Alertmanager for real-time monitoring alerts and notifications • Integrate the complete observability stack with Red Hat Advanced Cluster Management (RHACM) • Configure monitoring across multiple OpenShift clusters • Create custom monitoring rules and alert policies
+
+Prerequisites
+Before starting this lab, you should have:
+
+• Basic understanding of Kubernetes and OpenShift concepts • Familiarity with YAML configuration files • Knowledge of Linux command-line operations • Understanding of monitoring and observability concepts • Access to OpenShift cluster with cluster-admin privileges • Basic knowledge of Prometheus query language (PromQL)
+
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift clusters already deployed. Simply click Start Lab to access your environment - no need to build your own VM or install OpenShift from scratch.
+
+Your lab environment includes: • OpenShift 4.12+ cluster with RHACM installed • Command-line tools (oc, kubectl, helm) • Internet connectivity for downloading required components • Sufficient resources for monitoring stack deployment
+
+Task 1: Install Prometheus for Cluster Monitoring
+Subtask 1.1: Verify RHACM Installation and Create Monitoring Namespace
+First, let's verify that RHACM is properly installed and create a dedicated namespace for our observability stack.
+
+Connect to your OpenShift cluster:
+# Verify cluster connection
+oc whoami
+oc cluster-info
+Check RHACM installation status:
+# Verify RHACM operator is installed
+oc get operators -A | grep advanced-cluster-management
+
+# Check RHACM MultiClusterHub status
+oc get multiclusterhub -A
+Create monitoring namespace:
+# Create dedicated namespace for observability
+oc create namespace rhacm-observability
+
+# Verify namespace creation
+oc get namespace rhacm-observability
+Subtask 1.2: Install Prometheus Operator
+Create Prometheus Operator subscription:
+# Create the subscription file
+cat << 'EOF' > prometheus-operator-subscription.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: prometheus-operator
+  namespace: rhacm-observability
+spec:
+  channel: beta
+  name: prometheus-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+# Apply the subscription
+oc apply -f prometheus-operator-subscription.yaml
+Wait for operator installation:
+# Check operator installation status
+oc get csv -n rhacm-observability
+
+# Wait for the operator to be ready (this may take 2-3 minutes)
+oc wait --for=condition=Succeeded csv -l operators.coreos.com/prometheus-operator.rhacm-observability -n rhacm-observability --timeout=300s
+Subtask 1.3: Deploy Prometheus Instance
+Create Prometheus configuration:
+cat << 'EOF' > prometheus-instance.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: rhacm-prometheus
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-prometheus
+spec:
+  replicas: 1
+  retention: 30d
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+  serviceAccountName: prometheus-rhacm
+  serviceMonitorSelector:
+    matchLabels:
+      team: rhacm
+  ruleSelector:
+    matchLabels:
+      team: rhacm
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 100m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+EOF
+
+# Apply Prometheus configuration
+oc apply -f prometheus-instance.yaml
+Create ServiceAccount and RBAC:
+cat << 'EOF' > prometheus-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-rhacm
+  namespace: rhacm-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-rhacm
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-rhacm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-rhacm
+subjects:
+- kind: ServiceAccount
+  name: prometheus-rhacm
+  namespace: rhacm-observability
+EOF
+
+# Apply RBAC configuration
+oc apply -f prometheus-rbac.yaml
+Verify Prometheus deployment:
+# Check Prometheus pod status
+oc get pods -n rhacm-observability -l app.kubernetes.io/name=prometheus
+
+# Check Prometheus service
+oc get svc -n rhacm-observability -l app.kubernetes.io/name=prometheus
+Subtask 1.4: Configure ServiceMonitors for RHACM Components
+Create ServiceMonitor for RHACM Hub:
+cat << 'EOF' > rhacm-hub-servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rhacm-hub-metrics
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  selector:
+    matchLabels:
+      app: multicluster-operators-hub-subscription
+  endpoints:
+  - port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - open-cluster-management
+EOF
+
+# Apply ServiceMonitor
+oc apply -f rhacm-hub-servicemonitor.yaml
+Create ServiceMonitor for managed clusters:
+cat << 'EOF' > managed-cluster-servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: managed-cluster-metrics
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  selector:
+    matchLabels:
+      app: managed-cluster-info
+  endpoints:
+  - port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 60s
+    path: /metrics
+  namespaceSelector:
+    any: true
+EOF
+
+# Apply ServiceMonitor
+oc apply -f managed-cluster-servicemonitor.yaml
+Task 2: Deploy and Customize Grafana Dashboards
+Subtask 2.1: Install Grafana Operator
+Create Grafana Operator subscription:
+cat << 'EOF' > grafana-operator-subscription.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: grafana-operator
+  namespace: rhacm-observability
+spec:
+  channel: v4
+  name: grafana-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+# Apply subscription
+oc apply -f grafana-operator-subscription.yaml
+Wait for Grafana operator installation:
+# Check installation status
+oc get csv -n rhacm-observability | grep grafana
+
+# Wait for operator to be ready
+oc wait --for=condition=Succeeded csv -l operators.coreos.com/grafana-operator.rhacm-observability -n rhacm-observability --timeout=300s
+Subtask 2.2: Deploy Grafana Instance
+Create Grafana instance configuration:
+cat << 'EOF' > grafana-instance.yaml
+apiVersion: integreatly.org/v1alpha1
+kind: Grafana
+metadata:
+  name: rhacm-grafana
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-grafana
+spec:
+  ingress:
+    enabled: true
+    hostname: grafana-rhacm-observability.apps.cluster.local
+  config:
+    auth:
+      disable_login_form: false
+      disable_signout_menu: false
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+    log:
+      mode: console
+      level: warn
+    security:
+      admin_user: admin
+      admin_password: admin123
+  dashboardLabelSelector:
+    - matchExpressions:
+        - key: app
+          operator: In
+          values:
+            - rhacm-grafana
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+EOF
+
+# Apply Grafana configuration
+oc apply -f grafana-instance.yaml
+Create Grafana DataSource for Prometheus:
+cat << 'EOF' > grafana-datasource.yaml
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDataSource
+metadata:
+  name: prometheus-datasource
+  namespace: rhacm-observability
+spec:
+  grafana:
+    name: rhacm-grafana
+    namespace: rhacm-observability
+  datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: http://prometheus-operated:9090
+      isDefault: true
+      version: 1
+      editable: true
+      jsonData:
+        tlsSkipVerify: true
+        timeInterval: "5s"
+EOF
+
+# Apply DataSource configuration
+oc apply -f grafana-datasource.yaml
+Subtask 2.3: Create Custom RHACM Dashboards
+Create RHACM Cluster Overview Dashboard:
+cat << 'EOF' > rhacm-cluster-overview-dashboard.yaml
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  name: rhacm-cluster-overview
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-grafana
+spec:
+  grafana:
+    name: rhacm-grafana
+    namespace: rhacm-observability
+  json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "RHACM Cluster Overview",
+        "tags": ["rhacm", "clusters"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Total Managed Clusters",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "count(cluster_info)",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "red", "value": 80}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Cluster Status",
+            "type": "piechart",
+            "targets": [
+              {
+                "expr": "count by (status) (cluster_status)",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Application Deployment Status",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "application_status",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }
+EOF
+
+# Apply dashboard
+oc apply -f rhacm-cluster-overview-dashboard.yaml
+Create Resource Utilization Dashboard:
+cat << 'EOF' > rhacm-resource-dashboard.yaml
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  name: rhacm-resource-utilization
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-grafana
+spec:
+  grafana:
+    name: rhacm-grafana
+    namespace: rhacm-observability
+  json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "RHACM Resource Utilization",
+        "tags": ["rhacm", "resources"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "CPU Usage by Cluster",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "avg by (cluster) (cpu_usage_percent)",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {"label": "CPU %", "max": 100, "min": 0}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Memory Usage by Cluster",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "avg by (cluster) (memory_usage_percent)",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {"label": "Memory %", "max": 100, "min": 0}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Network I/O",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(network_bytes_total[5m])",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-6h",
+          "to": "now"
+        },
+        "refresh": "1m"
+      }
+    }
+EOF
+
+# Apply resource dashboard
+oc apply -f rhacm-resource-dashboard.yaml
+Subtask 2.4: Access and Verify Grafana
+Get Grafana route:
+# Get Grafana route URL
+oc get route -n rhacm-observability | grep grafana
+
+# If route doesn't exist, create one
+oc expose service grafana-service -n rhacm-observability
+Access Grafana UI:
+# Get the route URL
+GRAFANA_URL=$(oc get route grafana-route -n rhacm-observability -o jsonpath='{.spec.host}')
+echo "Grafana URL: https://$GRAFANA_URL"
+echo "Username: admin"
+echo "Password: admin123"
+Task 3: Set up Alertmanager for Real-time Alerts
+Subtask 3.1: Deploy Alertmanager
+Create Alertmanager configuration:
+cat << 'EOF' > alertmanager-config.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-rhacm
+  namespace: rhacm-observability
+stringData:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alertmanager@rhacm.local'
+    
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+      routes:
+      - match:
+          severity: critical
+        receiver: 'critical-alerts'
+      - match:
+          severity: warning
+        receiver: 'warning-alerts'
+    
+    receivers:
+    - name: 'web.hook'
+      webhook_configs:
+      - url: 'http://localhost:5001/'
+    
+    - name: 'critical-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/critical'
+        send_resolved: true
+    
+    - name: 'warning-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/warning'
+        send_resolved: true
+    
+    inhibit_rules:
+    - source_match:
+        severity: 'critical'
+      target_match:
+        severity: 'warning'
+      equal: ['alertname', 'dev', 'instance']
+EOF
+
+# Apply Alertmanager configuration
+oc apply -f alertmanager-config.yaml
+Deploy Alertmanager instance:
+cat << 'EOF' > alertmanager-instance.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  name: rhacm-alertmanager
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-alertmanager
+spec:
+  replicas: 1
+  serviceAccountName: alertmanager-rhacm
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+  resources:
+    requests:
+      memory: 200Mi
+      cpu: 100m
+    limits:
+      memory: 500Mi
+      cpu: 500m
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+EOF
+
+# Apply Alertmanager instance
+oc apply -f alertmanager-instance.yaml
+Create Alertmanager ServiceAccount and RBAC:
+cat << 'EOF' > alertmanager-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager-rhacm
+  namespace: rhacm-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alertmanager-rhacm
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alertmanager-rhacm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alertmanager-rhacm
+subjects:
+- kind: ServiceAccount
+  name: alertmanager-rhacm
+  namespace: rhacm-observability
+EOF
+
+# Apply RBAC
+oc apply -f alertmanager-rbac.yaml
+Subtask 3.2: Configure Prometheus to Use Alertmanager
+Update Prometheus configuration to include Alertmanager:
+cat << 'EOF' > prometheus-with-alertmanager.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: rhacm-prometheus
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-prometheus
+spec:
+  replicas: 1
+  retention: 30d
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+  serviceAccountName: prometheus-rhacm
+  serviceMonitorSelector:
+    matchLabels:
+      team: rhacm
+  ruleSelector:
+    matchLabels:
+      team: rhacm
+  alerting:
+    alertmanagers:
+    - namespace: rhacm-observability
+      name: alertmanager-operated
+      port: web
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 100m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+EOF
+
+# Apply updated Prometheus configuration
+oc apply -f prometheus-with-alertmanager.yaml
+Subtask 3.3: Create Alert Rules for RHACM
+Create RHACM-specific alert rules:
+cat << 'EOF' > rhacm-alert-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rhacm-alerts
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  groups:
+  - name: rhacm.cluster.rules
+    rules:
+    - alert: ManagedClusterDown
+      expr: cluster_status == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Managed cluster {{ $labels.cluster }} is down"
+        description: "Managed cluster {{ $labels.cluster }} has been down for more than 5 minutes."
+    
+    - alert: HighCPUUsage
+      expr: avg by (cluster) (cpu_usage_percent) > 80
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage on cluster {{ $labels.cluster }}"
+        description: "CPU usage on cluster {{ $labels.cluster }} is above 80% for more than 10 minutes."
+    
+    - alert: HighMemoryUsage
+      expr: avg by (cluster) (memory_usage_percent) > 85
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage on cluster {{ $labels.cluster }}"
+        description: "Memory usage on cluster {{ $labels.cluster }} is above 85% for more than 10 minutes."
+    
+    - alert: ApplicationDeploymentFailed
+      expr: application_status{status="failed"} == 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Application deployment failed"
+        description: "Application {{ $labels.application }} deployment failed on cluster {{ $labels.cluster }}."
+    
+    - alert: PolicyViolation
+      expr: policy_violation_count > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Policy violation detected"
+        description: "{{ $value }} policy violations detected on cluster {{ $labels.cluster }}."
+EOF
+
+# Apply alert rules
+oc apply -f rhacm-alert-rules.yaml
+Create cluster health monitoring rules:
+cat << 'EOF' > cluster-health-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-health-alerts
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  groups:
+  - name: cluster.health.rules
+    rules:
+    - alert: ClusterNodeNotReady
+      expr: cluster_node_status{status="NotReady"} == 1
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Cluster node not ready"
+        description: "Node {{ $labels.node }} in cluster {{ $labels.cluster }} is not ready for more than 5 minutes."
+    
+    - alert: PodCrashLooping
+      expr: increase(pod_restart_count[1h]) > 5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod crash looping"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is crash looping."
+    
+    - alert: PersistentVolumeUsageHigh
+      expr: pv_usage_percent > 90
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Persistent volume usage high"
+        description: "Persistent volume {{ $labels.pv }} usage is above 90%."
+EOF
+
+# Apply cluster health rules
+oc apply -f cluster-health-rules.yaml
+Subtask 3.4: Test Alert Configuration
+Verify Alertmanager is running:
+# Check Alertmanager pods
+oc get pods -n rhacm-observability -l app.kubernetes.io/name=alertmanager
+
+# Check Alertmanager service
+oc get svc -n rhacm-observability -l app.kubernetes.io/name=alertmanager
+Access Alertmanager UI:
+# Create route for Alertmanager
+oc expose service alertmanager-operated -n rhacm-observability --name=alertmanager-route
+
+# Get Alertmanager URL
+ALERTMANAGER_URL=$(oc get route alertmanager-route -n rhacm-observability -o jsonpath='{.spec.host}')
+echo "Alertmanager URL: https://$ALERTMANAGER_URL"
+Verify alert rules are loaded:
+# Check if Prometheus has loaded the rules
+oc exec -n rhacm-observability prometheus-rhacm-prometheus-0 -- promtool query instant 'prometheus_rule_group_rules'
+Verification and Testing
+Verify Complete Observability Stack
+Check all components are running:
+# Check all pods in observability namespace
+oc get pods -n rhacm-observability
+
+# Verify services
+oc get svc -n rhacm-observability
+
+# Check routes
+oc get routes -n rhacm-observability
+Test Prometheus metrics collection:
+# Port forward to Prometheus
+oc port-forward -n rhacm-observability svc/prometheus-operated 9090:9090 &
+
+# Test metrics endpoint (in another terminal)
+curl http://localhost:9090/api/v1/query?query=up
+
+# Stop port forwarding
+pkill -f "port-forward.*9090"
+Verify Grafana dashboards:
+# Get Grafana admin credentials
+echo "Grafana URL: https://$(oc get route grafana-route -n rhacm-observability -o jsonpath='{.spec.host}')"
+echo "Username: admin"
+echo "Password: admin123"
+Test Alert Functionality
+Create a test alert:
+cat << 'EOF' > test-alert.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: test-alert
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  groups:
+  - name: test.rules
+    rules:
+    - alert: TestAlert
+      expr: vector(1)
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "This is a test alert"
+        description: "This alert is always firing for testing purposes."
+EOF
+
+# Apply test alert
+oc apply -f test-alert.yaml
+
+# Wait a few minutes and check Alertmanager UI for the alert
+Troubleshooting Common Issues
+Issue 1: Prometheus Not Scraping Metrics
+Problem: Prometheus is not collecting metrics from RHACM components.
+
+Solution:
+
+# Check ServiceMonitor configuration
+oc get servicemonitor -n rhacm-observability -o yaml
+
+# Verify target endpoints in Prometheus
+oc port-forward -n rhacm-observability svc/prometheus-operated 9090:9090 &
+# Navigate to http://localhost:9090/targets in browser
+Issue 2: Grafana Dashboards Not Loading
+Problem: Grafana dashboards are not displaying data.
+
+Solution:
+
+# Check Grafana datasource configuration
+oc get grafanadatasource -n rhacm-observability -o yaml
+
+# Verify Prometheus connectivity from Grafana
+oc logs -n rhacm-observability deployment/grafana-deployment
+Issue 3: Alerts Not Firing
+Problem: Alertmanager is not receiving or processing alerts.
+
+Solution:
+
+# Check Prometheus alert rules
+oc get prometheusrule -n rhacm-observability
+
+# Verify Alertmanager configuration
+oc get secret alertmanager-rhacm -n rhacm-observability -o yaml
+
+# Check Alertmanager logs
+oc logs -n rhacm-observability alertmanager-rhacm-alertmanager-0
+Cleanup (Optional)
+If you need to clean up the lab environment:
+
+# Remove all observability components
+oc delete namespace rhacm-observability
+
+# Remove cluster-wide RBAC
+oc delete clusterrole prometheus-rhacm alertmanager-rhacm
+oc delete clusterrolebinding prometheus-rhacm alertmanager-rhacm
+Conclusion
+Congratulations! You have successfully completed Lab 5: Install and Customize RHACM Observability Stack. In this comprehensive lab, you have:
+
+Key Accomplishments:
+
+• Installed and configured Prometheus for comprehensive cluster monitoring and metrics collection across your RHACM environment • Deployed Grafana with custom dashboards that provide visual insights into cluster performance, resource utilization, and application status • Set up Alertmanager with intelligent alerting rules that proactively notify you of critical issues and policy violations • Integrated the complete observability stack with Red Hat Advanced Cluster Management for centralized monitoring • Created custom monitoring rules specific to RHACM components and multi-cluster scenarios • Configured real-time alerting for cluster health, resource usage, and application deployment status
+
+Why This Matters:
+
+The observability stack you've implemented is crucial for enterprise-grade multi-cluster management because it:
+
+Provides proactive monitoring that helps prevent issues before they impact users
+Enables data-driven decisions through comprehensive metrics and visualizations
+Reduces mean time to resolution by quickly identifying and alerting on problems
+Supports compliance requirements through detailed monitoring and audit trails
+Scales across multiple clusters while maintaining centralized visibility
+Real-World Applications:
+
+This observability setup is essential for:
+
+Production environments where uptime and performance are critical
+Compliance scenarios requiring detailed monitoring and reporting
+DevOps teams needing insights into application and infrastructure health
+Platform teams managing multiple OpenShift clusters across different environments
+You now have the skills to implement, customize, and maintain a production-ready observability stack that provides comprehensive monitoring capabilities for Red Hat Advanced Cluster Management environments. These skills are directly applicable to the Multicluster Management with Red Hat OpenShift Platform Plus certification and real-world enterprise scenarios.
+
+The monitoring and alerting capabilities you've configured will serve as the foundation for maintaining healthy, performant, and compliant multi-cluster environments in production settings.

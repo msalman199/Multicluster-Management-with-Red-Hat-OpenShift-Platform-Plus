@@ -1,0 +1,77 @@
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  name: rhacm-cluster-overview
+  namespace: rhacm-observability
+  labels:
+    app: rhacm-grafana
+spec:
+  grafana:
+    name: rhacm-grafana
+    namespace: rhacm-observability
+  json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "RHACM Cluster Overview",
+        "tags": ["rhacm", "clusters"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Total Managed Clusters",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "count(cluster_info)",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "red", "value": 80}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Cluster Status",
+            "type": "piechart",
+            "targets": [
+              {
+                "expr": "count by (status) (cluster_status)",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Application Deployment Status",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "application_status",
+                "refId": "A"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

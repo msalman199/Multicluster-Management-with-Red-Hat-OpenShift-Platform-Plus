@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: managed-cluster-metrics
+  namespace: rhacm-observability
+  labels:
+    team: rhacm
+spec:
+  selector:
+    matchLabels:
+      app: managed-cluster-info
+  endpoints:
+  - port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 60s
+    path: /metrics
+  namespaceSelector:
+    any: true
