@@ -1,0 +1,224 @@
+Lab 3: Use RHACM Web Console to Inspect Resources Across Clusters
+Lab Objectives
+By the end of this lab, you will be able to:
+
+• Access and navigate the Red Hat Advanced Cluster Management (RHACM) Web Console • Search for and inspect resources such as pods, services, and deployments across multiple clusters • Drill down into cluster-specific details and configurations • Apply updates and modifications to resources through the web interface • Understand the centralized management capabilities of RHACM for multi-cluster environments
+
+Prerequisites
+Before starting this lab, you should have:
+
+• Basic understanding of Kubernetes concepts (pods, services, deployments) • Familiarity with OpenShift Container Platform fundamentals • Knowledge of YAML configuration files • Basic understanding of container orchestration concepts • Completion of previous RHACM labs or equivalent experience
+
+Required Knowledge Areas
+• Kubernetes Resources: Understanding of core Kubernetes objects • OpenShift Concepts: Familiarity with OpenShift-specific resources • Web Browser Navigation: Comfortable using web-based interfaces • Command Line Basics: Basic terminal/command prompt usage
+
+Lab Environment Setup
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines for this lab. Simply click Start Lab to access your environment. No need to build your own virtual machines or install software.
+
+Environment Details
+Your lab environment includes: • RHACM Hub cluster with web console access • Multiple managed OpenShift clusters • Pre-deployed sample applications across clusters • Network connectivity between all clusters
+
+Task 1: Access the RHACM Web Console
+Subtask 1.1: Initial Console Access
+Open your web browser and navigate to the RHACM console URL provided in your lab environment
+
+Log in using the provided credentials:
+
+Username: admin
+Password: [provided in lab environment]
+Verify successful login by confirming you see the RHACM dashboard with cluster overview
+
+Subtask 1.2: Navigate the Console Interface
+Explore the main navigation menu on the left side of the console
+
+Identify key sections: • Clusters: View and manage all connected clusters • Applications: Manage multi-cluster applications • Governance: Policy and compliance management • Infrastructure: Cluster lifecycle management
+
+Access the Overview dashboard to see cluster health status and resource summaries
+
+Subtask 1.3: Verify Cluster Connectivity
+Click on "Clusters" in the left navigation menu
+
+Review the cluster list and verify you can see: • Hub cluster (local-cluster) • At least 2-3 managed clusters • Status indicators showing "Ready" for all clusters
+
+Note cluster details such as: • Cluster names • OpenShift versions • Node counts • Status indicators
+
+Task 2: Search for and Inspect Resources Across Clusters
+Subtask 2.1: Use the Global Search Feature
+Access the Search functionality: • Click on the search icon (magnifying glass) in the top navigation bar • Or navigate to Search from the main menu
+
+Perform a basic resource search:
+
+Search Query: kind:pod
+Review search results showing pods from all managed clusters
+
+Filter results by cluster: • Use the cluster filter dropdown • Select a specific cluster to narrow results
+
+Subtask 2.2: Search for Specific Resource Types
+Search for services across all clusters:
+
+Search Query: kind:service
+Search for deployments:
+
+Search Query: kind:deployment
+Search for resources in specific namespaces:
+
+Search Query: kind:pod namespace:default
+Use advanced search filters: • Label selectors: label:app=nginx • Resource status: kind:pod status:Running • Cluster-specific: cluster:managed-cluster-1 kind:service
+
+Subtask 2.3: Inspect Pod Resources
+Search for all pods:
+
+Search Query: kind:pod
+Select a pod from the results by clicking on its name
+
+Review pod details: • Basic Information: Name, namespace, cluster location • Status: Current phase, restart count, age • Specifications: Container images, resource requests/limits • Events: Recent pod events and status changes
+
+Navigate to pod logs: • Click on the Logs tab • Review container output and error messages • Use log filtering options if available
+
+Subtask 2.4: Inspect Service Resources
+Search for services:
+
+Search Query: kind:service
+Select a service from the search results
+
+Examine service configuration: • Endpoints: Target pods and IP addresses • Ports: Service port mappings • Selectors: Pod selection criteria • Type: ClusterIP, NodePort, LoadBalancer, etc.
+
+View related resources: • Click on Related Resources to see connected pods • Review endpoint configurations
+
+Subtask 2.5: Inspect Deployment Resources
+Search for deployments:
+
+Search Query: kind:deployment
+Select a deployment to view details
+
+Review deployment specifications: • Replica count: Desired vs. current replicas • Update strategy: Rolling update configuration • Pod template: Container specifications • Conditions: Deployment status and health
+
+Check deployment history: • Look for revision information • Review rollout status
+
+Task 3: Drill Down into Cluster Specifics and Apply Updates
+Subtask 3.1: Access Cluster-Specific Views
+Navigate to the Clusters section
+
+Select a specific managed cluster by clicking on its name
+
+Explore cluster details: • Overview: Cluster health, resource usage, alerts • Nodes: Worker node status and specifications • Machine pools: Node group configurations • Add-ons: Installed cluster add-ons and operators
+
+Review cluster metrics: • CPU and memory utilization • Storage usage • Network statistics
+
+Subtask 3.2: Navigate to Cluster Resources
+From the cluster details page, click on View cluster
+
+Access the OpenShift console for the selected cluster
+
+Navigate between RHACM and cluster-specific views: • Use browser tabs to maintain both interfaces • Note the different perspectives available
+
+Subtask 3.3: Apply Resource Updates Through RHACM
+Return to the RHACM console
+
+Search for a deployment to modify:
+
+Search Query: kind:deployment name:sample-app
+Select the deployment and click Edit
+
+Modify the replica count:
+
+spec:
+  replicas: 3  # Change from current value
+Apply the changes: • Click Save or Apply • Confirm the update in the confirmation dialog
+
+Verify the update: • Wait for the deployment to scale • Check that new pods are created • Confirm the replica count matches your change
+
+Subtask 3.4: Update Resource Labels
+Search for a service to modify:
+
+Search Query: kind:service namespace:default
+Select a service and access the Edit option
+
+Add or modify labels:
+
+metadata:
+  labels:
+    environment: production
+    managed-by: rhacm
+Save the changes and verify the labels are applied
+
+Subtask 3.5: Monitor Update Progress
+Use the search function to monitor your changes:
+
+Search Query: kind:deployment name:sample-app
+Check deployment status: • Verify replica count changes • Monitor pod creation/termination • Review deployment conditions
+
+View events related to your changes: • Look for scaling events • Check for any error messages • Confirm successful updates
+
+Task 4: Advanced Resource Management
+Subtask 4.1: Cross-Cluster Resource Comparison
+Search for the same application across multiple clusters:
+
+Search Query: kind:deployment label:app=sample-app
+Compare configurations between clusters: • Note differences in replica counts • Compare resource limits and requests • Identify configuration variations
+
+Document differences for standardization purposes
+
+Subtask 4.2: Bulk Resource Operations
+Select multiple resources using the search interface: • Use checkboxes to select multiple pods or services • Apply filters to narrow selection
+
+Perform bulk actions (if available): • Label multiple resources simultaneously • Apply common annotations • Perform bulk deletions (with caution)
+
+Subtask 4.3: Resource Relationship Mapping
+Select a deployment from search results
+
+Explore resource relationships: • View associated ReplicaSets • Check connected Services • Identify related ConfigMaps or Secrets
+
+Create a mental map of resource dependencies
+
+Troubleshooting Common Issues
+Issue 1: Console Access Problems
+Symptoms: Cannot access RHACM web console Solutions: • Verify the correct URL is being used • Check network connectivity • Clear browser cache and cookies • Try a different browser or incognito mode
+
+Issue 2: Search Results Not Appearing
+Symptoms: Search queries return no results Solutions: • Verify cluster connectivity in the Clusters section • Check search syntax and filters • Ensure resources exist in the target clusters • Wait for search index to update (may take a few minutes)
+
+Issue 3: Resource Updates Not Applied
+Symptoms: Changes made through console don't take effect Solutions: • Verify you have appropriate permissions • Check for validation errors in the YAML • Ensure the target cluster is accessible • Review cluster events for error messages
+
+Issue 4: Performance Issues
+Symptoms: Console is slow or unresponsive Solutions: • Reduce the scope of search queries • Use specific filters to limit results • Check network latency to clusters • Consider browser resource usage
+
+Verification and Testing
+Verification Checklist
+Complete the following to verify your lab success:
+
+ Successfully accessed RHACM web console
+ Performed searches across multiple clusters
+ Inspected pods, services, and deployments
+ Applied updates to at least one resource
+ Verified updates took effect
+ Navigated between cluster-specific views
+ Used advanced search filters effectively
+Testing Your Knowledge
+Search Challenge: Find all pods in the "kube-system" namespace across all clusters
+Update Challenge: Scale a deployment from 2 to 4 replicas using the web console
+Investigation Challenge: Identify which cluster has the highest number of running pods
+Lab Conclusion
+What You Accomplished
+In this lab, you successfully:
+
+• Mastered RHACM Web Console Navigation: Learned to efficiently navigate the multi-cluster management interface • Implemented Cross-Cluster Resource Discovery: Used advanced search capabilities to find and inspect resources across multiple OpenShift clusters • Applied Resource Management Skills: Made real-time updates to deployments and services through the centralized console • Developed Multi-Cluster Awareness: Gained understanding of how resources are distributed and managed across cluster boundaries
+
+Why This Matters
+The skills you developed in this lab are crucial for:
+
+• Enterprise Multi-Cluster Management: Organizations running multiple OpenShift clusters need centralized visibility and control • Operational Efficiency: Reduces time spent switching between individual cluster consoles • Consistency and Standardization: Enables consistent resource management practices across all clusters • Troubleshooting and Monitoring: Provides unified view for identifying and resolving issues quickly • Compliance and Governance: Supports policy enforcement and compliance monitoring across the entire infrastructure
+
+Next Steps
+To continue building your RHACM expertise:
+
+• Explore application deployment across multiple clusters • Learn about policy-based governance and compliance • Practice cluster lifecycle management operations • Investigate GitOps integration with RHACM • Study disaster recovery and backup strategies for multi-cluster environments
+
+Real-World Applications
+These skills directly apply to:
+
+• DevOps Engineering: Managing containerized applications across development, staging, and production clusters • Platform Engineering: Providing self-service capabilities to development teams across multiple environments • Site Reliability Engineering: Monitoring and maintaining service availability across geographically distributed clusters • Cloud Architecture: Designing and implementing hybrid and multi-cloud container strategies
+
+The centralized management capabilities you've learned are essential for modern enterprise container platforms and will serve as a foundation for advanced multi-cluster operations and automation.
