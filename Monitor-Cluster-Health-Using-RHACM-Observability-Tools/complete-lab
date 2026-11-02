@@ -1,0 +1,504 @@
+Lab 6: Monitor Cluster Health Using RHACM Observability Tools
+Objectives
+By the end of this lab, you will be able to:
+
+Configure and use Prometheus to collect performance metrics from Kubernetes clusters
+Create and customize Grafana dashboards to visualize cluster health data
+Set up custom alerts for proactive monitoring
+Test alert configurations to ensure proper notification delivery
+Understand the complete observability stack for multicluster management
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with YAML configuration files
+Basic knowledge of Linux command line operations
+Understanding of monitoring concepts (metrics, alerts, dashboards)
+Completed previous RHACM labs or equivalent experience
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+Red Hat Advanced Cluster Management (RHACM) hub cluster
+Two managed OpenShift clusters
+Prometheus monitoring stack
+Grafana visualization platform
+Pre-configured network connectivity
+Task 1: Configure Prometheus to Collect Performance Metrics
+Subtask 1.1: Verify RHACM Observability Components
+First, let's check if the observability components are properly installed and running.
+
+Access your lab environment by clicking the terminal icon on your desktop.
+
+Verify you're connected to the hub cluster:
+
+oc whoami
+oc cluster-info
+Check the observability namespace:
+oc get namespace open-cluster-management-observability
+Verify observability pods are running:
+oc get pods -n open-cluster-management-observability
+Expected output should show pods like:
+
+observability-thanos-query
+observability-grafana
+observability-alertmanager
+Subtask 1.2: Enable Observability on Managed Clusters
+List your managed clusters:
+oc get managedclusters
+Create observability addon configuration:
+cat > observability-addon.yaml << 'EOF'
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: observability-controller
+  namespace: cluster1
+spec:
+  installNamespace: open-cluster-management-addon-observability
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: observability-controller
+  namespace: cluster2
+spec:
+  installNamespace: open-cluster-management-addon-observability
+EOF
+Apply the observability addon:
+oc apply -f observability-addon.yaml
+Verify addon installation:
+oc get managedclusteraddons -A | grep observability
+Subtask 1.3: Configure Custom Metrics Collection
+Create a custom ServiceMonitor for application metrics:
+cat > custom-servicemonitor.yaml << 'EOF'
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sample-app-metrics
+  namespace: open-cluster-management-observability
+  labels:
+    app: sample-monitoring
+spec:
+  selector:
+    matchLabels:
+      app: sample-app
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - default
+    - sample-app-namespace
+EOF
+Apply the ServiceMonitor:
+oc apply -f custom-servicemonitor.yaml
+Verify Prometheus is collecting metrics:
+oc exec -n open-cluster-management-observability deployment/observability-thanos-query -- \
+  curl -s "http://localhost:9090/api/v1/targets" | jq '.data.activeTargets[] | select(.labels.job=="sample-app-metrics")'
+Task 2: Visualize Data in Grafana Dashboards
+Subtask 2.1: Access Grafana Dashboard
+Get the Grafana route:
+oc get route grafana -n open-cluster-management-observability
+Extract the Grafana URL:
+GRAFANA_URL=$(oc get route grafana -n open-cluster-management-observability -o jsonpath='{.spec.host}')
+echo "Grafana URL: https://$GRAFANA_URL"
+Get Grafana admin credentials:
+oc get secret grafana-admin-credentials -n open-cluster-management-observability -o jsonpath='{.data.username}' | base64 -d
+echo
+oc get secret grafana-admin-credentials -n open-cluster-management-observability -o jsonpath='{.data.password}' | base64 -d
+echo
+Subtask 2.2: Create Custom Dashboard
+Create a custom dashboard configuration:
+cat > cluster-health-dashboard.json << 'EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Cluster Health Overview",
+    "tags": ["rhacm", "cluster-health"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Cluster CPU Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "100 - (avg by (cluster) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "{{cluster}}"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Percentage",
+            "max": 100,
+            "min": 0
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Cluster Memory Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+            "legendFormat": "{{cluster}}"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Percentage",
+            "max": 100,
+            "min": 0
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}
+EOF
+Import the dashboard using Grafana API:
+GRAFANA_PASSWORD=$(oc get secret grafana-admin-credentials -n open-cluster-management-observability -o jsonpath='{.data.password}' | base64 -d)
+
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -u "admin:$GRAFANA_PASSWORD" \
+  -d @cluster-health-dashboard.json \
+  "https://$GRAFANA_URL/api/dashboards/db"
+Subtask 2.3: Configure Dashboard Variables
+Create a dashboard with cluster variables:
+cat > advanced-cluster-dashboard.json << 'EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Advanced Cluster Monitoring",
+    "tags": ["rhacm", "advanced"],
+    "templating": {
+      "list": [
+        {
+          "name": "cluster",
+          "type": "query",
+          "query": "label_values(up, cluster)",
+          "refresh": 1,
+          "includeAll": true,
+          "multi": true
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Pod Status by Cluster",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum by (cluster, phase) (kube_pod_status_phase{cluster=~\"$cluster\"})",
+            "legendFormat": "{{cluster}} - {{phase}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+}
+EOF
+Import the advanced dashboard:
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -u "admin:$GRAFANA_PASSWORD" \
+  -d @advanced-cluster-dashboard.json \
+  "https://$GRAFANA_URL/api/dashboards/db"
+Task 3: Configure Custom Alerts and Test Them
+Subtask 3.1: Create Custom Alert Rules
+Create a PrometheusRule for cluster health alerts:
+cat > cluster-health-alerts.yaml << 'EOF'
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-health-alerts
+  namespace: open-cluster-management-observability
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: cluster.health
+    rules:
+    - alert: ClusterHighCPUUsage
+      expr: 100 - (avg by (cluster) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+      for: 5m
+      labels:
+        severity: warning
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "High CPU usage detected on cluster {{ $labels.cluster }}"
+        description: "Cluster {{ $labels.cluster }} has CPU usage above 80% for more than 5 minutes."
+    
+    - alert: ClusterHighMemoryUsage
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "High memory usage detected on cluster {{ $labels.cluster }}"
+        description: "Cluster {{ $labels.cluster }} has memory usage above 85% for more than 5 minutes."
+    
+    - alert: ClusterNodeDown
+      expr: up{job="node-exporter"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "Node is down in cluster {{ $labels.cluster }}"
+        description: "Node {{ $labels.instance }} in cluster {{ $labels.cluster }} has been down for more than 1 minute."
+EOF
+Apply the alert rules:
+oc apply -f cluster-health-alerts.yaml
+Verify the rules are loaded:
+oc get prometheusrules -n open-cluster-management-observability
+Subtask 3.2: Configure AlertManager
+Create AlertManager configuration:
+cat > alertmanager-config.yaml << 'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-main
+  namespace: open-cluster-management-observability
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alerts@company.com'
+    
+    route:
+      group_by: ['alertname', 'cluster']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+      routes:
+      - match:
+          severity: critical
+        receiver: 'critical-alerts'
+      - match:
+          severity: warning
+        receiver: 'warning-alerts'
+    
+    receivers:
+    - name: 'web.hook'
+      webhook_configs:
+      - url: 'http://localhost:5001/'
+    
+    - name: 'critical-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/critical'
+        send_resolved: true
+    
+    - name: 'warning-alerts'
+      webhook_configs:
+      - url: 'http://localhost:5001/warning'
+        send_resolved: true
+EOF
+Apply the AlertManager configuration:
+oc apply -f alertmanager-config.yaml
+Restart AlertManager to pick up new configuration:
+oc rollout restart statefulset/alertmanager-main -n open-cluster-management-observability
+Subtask 3.3: Test Alert Configuration
+Create a test workload to trigger alerts:
+cat > cpu-stress-test.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-stress-test
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cpu-stress
+  template:
+    metadata:
+      labels:
+        app: cpu-stress
+    spec:
+      containers:
+      - name: cpu-stress
+        image: progrium/stress
+        args: ["--cpu", "2", "--timeout", "300s"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+EOF
+Deploy the stress test:
+oc apply -f cpu-stress-test.yaml
+Monitor the stress test deployment:
+oc get pods -l app=cpu-stress -w
+Check if alerts are firing:
+# Wait a few minutes, then check AlertManager
+ALERTMANAGER_URL=$(oc get route alertmanager-main -n open-cluster-management-observability -o jsonpath='{.spec.host}')
+echo "AlertManager URL: https://$ALERTMANAGER_URL"
+
+# Check active alerts via API
+curl -s "https://$ALERTMANAGER_URL/api/v1/alerts" | jq '.data[] | select(.labels.alertname=="ClusterHighCPUUsage")'
+Verify alert notifications:
+# Check AlertManager logs for webhook calls
+oc logs -n open-cluster-management-observability statefulset/alertmanager-main | grep -i webhook
+Clean up the stress test:
+oc delete deployment cpu-stress-test -n default
+Subtask 3.4: Create Silence Rules
+Create a silence for maintenance windows:
+cat > maintenance-silence.json << 'EOF'
+{
+  "matchers": [
+    {
+      "name": "cluster",
+      "value": "cluster1",
+      "isRegex": false
+    }
+  ],
+  "startsAt": "2024-01-01T10:00:00.000Z",
+  "endsAt": "2024-01-01T12:00:00.000Z",
+  "createdBy": "admin",
+  "comment": "Scheduled maintenance window for cluster1"
+}
+EOF
+Apply the silence via AlertManager API:
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d @maintenance-silence.json \
+  "https://$ALERTMANAGER_URL/api/v1/silences"
+Verify the silence is active:
+curl -s "https://$ALERTMANAGER_URL/api/v1/silences" | jq '.data[] | select(.comment | contains("maintenance"))'
+Verification and Testing
+Verify Complete Setup
+Check all observability components:
+echo "=== Checking Observability Stack ==="
+oc get pods -n open-cluster-management-observability | grep -E "(grafana|prometheus|alertmanager|thanos)"
+
+echo -e "\n=== Checking Managed Cluster Addons ==="
+oc get managedclusteraddons -A | grep observability
+
+echo -e "\n=== Checking Alert Rules ==="
+oc get prometheusrules -n open-cluster-management-observability
+
+echo -e "\n=== Checking Service Monitors ==="
+oc get servicemonitors -n open-cluster-management-observability
+Test Prometheus queries:
+# Test basic cluster metrics
+oc exec -n open-cluster-management-observability deployment/observability-thanos-query -- \
+  curl -s "http://localhost:9090/api/v1/query?query=up" | jq '.data.result[] | {cluster: .metric.cluster, status: .value[1]}'
+Verify Grafana dashboard access:
+echo "Grafana URL: https://$GRAFANA_URL"
+echo "Username: admin"
+echo "Password: $GRAFANA_PASSWORD"
+Troubleshooting Common Issues
+Issue 1: Observability Pods Not Starting
+Symptoms: Pods in open-cluster-management-observability namespace are in Pending or CrashLoopBackOff state.
+
+Solution:
+
+# Check pod events
+oc describe pod <pod-name> -n open-cluster-management-observability
+
+# Check resource availability
+oc describe nodes | grep -A 5 "Allocated resources"
+
+# Restart the observability operator
+oc rollout restart deployment/multicluster-observability-operator -n open-cluster-management
+Issue 2: Metrics Not Appearing in Grafana
+Symptoms: Dashboards show "No data" or empty graphs.
+
+Solution:
+
+# Verify Prometheus targets
+oc exec -n open-cluster-management-observability deployment/observability-thanos-query -- \
+  curl -s "http://localhost:9090/api/v1/targets" | jq '.data.activeTargets[] | select(.health != "up")'
+
+# Check ServiceMonitor configuration
+oc get servicemonitors -n open-cluster-management-observability -o yaml
+
+# Verify network connectivity
+oc exec -n open-cluster-management-observability deployment/observability-grafana -- \
+  curl -s "http://observability-thanos-query:9090/api/v1/query?query=up"
+Issue 3: Alerts Not Firing
+Symptoms: Expected alerts are not showing up in AlertManager.
+
+Solution:
+
+# Check PrometheusRule syntax
+oc get prometheusrules cluster-health-alerts -n open-cluster-management-observability -o yaml
+
+# Verify alert evaluation
+oc exec -n open-cluster-management-observability deployment/observability-thanos-query -- \
+  curl -s "http://localhost:9090/api/v1/rules" | jq '.data.groups[] | select(.name=="cluster.health")'
+
+# Check AlertManager configuration
+oc get secret alertmanager-main -n open-cluster-management-observability -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
+Conclusion
+Congratulations! You have successfully completed Lab 6: Monitor Cluster Health Using RHACM Observability Tools.
+
+What You Accomplished
+In this lab, you have:
+
+Configured Prometheus Monitoring: Set up comprehensive metrics collection across multiple Kubernetes clusters using Prometheus and custom ServiceMonitors
+Created Grafana Dashboards: Built custom visualization dashboards to monitor cluster health, including CPU usage, memory consumption, and pod status across multiple clusters
+Implemented Alert Management: Configured custom alert rules for proactive monitoring and set up AlertManager for notification delivery
+Tested the Complete Stack: Verified the entire observability pipeline by creating stress tests and validating alert firing and resolution
+Why This Matters
+Real-World Application: The observability skills you've learned are crucial for:
+
+Production Operations: Maintaining healthy Kubernetes clusters in enterprise environments
+Proactive Monitoring: Identifying issues before they impact users or applications
+Capacity Planning: Understanding resource utilization trends across multiple clusters
+Incident Response: Having the data and alerts needed to quickly diagnose and resolve issues
+Career Relevance: These skills directly support roles in:
+
+Site Reliability Engineering (SRE)
+DevOps Engineering
+Platform Engineering
+Kubernetes Administration
+Cloud Operations
+Next Steps
+To further develop your observability expertise:
+
+Explore advanced Prometheus queries and recording rules
+Learn about distributed tracing with tools like Jaeger
+Practice creating custom Grafana plugins and panels
+Study log aggregation and analysis with tools like Fluentd and Elasticsearch
+Investigate chaos engineering practices for testing observability systems
+The monitoring and observability foundation you've built in this lab will serve as a cornerstone for managing production Kubernetes environments at scale.

@@ -1,0 +1,13 @@
+{
+  "matchers": [
+    {
+      "name": "cluster",
+      "value": "cluster1",
+      "isRegex": false
+    }
+  ],
+  "startsAt": "2024-01-01T10:00:00.000Z",
+  "endsAt": "2024-01-01T12:00:00.000Z",
+  "createdBy": "admin",
+  "comment": "Scheduled maintenance window for cluster1"
+}

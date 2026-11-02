@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-health-alerts
+  namespace: open-cluster-management-observability
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: cluster.health
+    rules:
+    - alert: ClusterHighCPUUsage
+      expr: 100 - (avg by (cluster) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+      for: 5m
+      labels:
+        severity: warning
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "High CPU usage detected on cluster {{ $labels.cluster }}"
+        description: "Cluster {{ $labels.cluster }} has CPU usage above 80% for more than 5 minutes."
+    
+    - alert: ClusterHighMemoryUsage
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "High memory usage detected on cluster {{ $labels.cluster }}"
+        description: "Cluster {{ $labels.cluster }} has memory usage above 85% for more than 5 minutes."
+    
+    - alert: ClusterNodeDown
+      expr: up{job="node-exporter"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        cluster: "{{ $labels.cluster }}"
+      annotations:
+        summary: "Node is down in cluster {{ $labels.cluster }}"
+        description: "Node {{ $labels.instance }} in cluster {{ $labels.cluster }} has been down for more than 1 minute."
