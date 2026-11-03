@@ -1,0 +1,53 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: network-security-policy
+  namespace: policy-management
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Access Control
+    policy.open-cluster-management.io/controls: PR.AC-3
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: network-policy-config
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+              - production
+              - development
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: deny-all-ingress
+                  namespace: production
+                spec:
+                  podSelector: {}
+                  policyTypes:
+                    - Ingress
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: allow-same-namespace
+                  namespace: production
+                spec:
+                  podSelector: {}
+                  policyTypes:
+                    - Ingress
+                  ingress:
+                    - from:
+                        - namespaceSelector:
+                            matchLabels:
+                              name: production

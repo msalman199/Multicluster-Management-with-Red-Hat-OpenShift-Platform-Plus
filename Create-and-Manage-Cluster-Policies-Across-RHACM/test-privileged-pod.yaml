@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-privileged-pod
+  namespace: production
+spec:
+  containers:
+    - name: test-container
+      image: nginx:latest
+      securityContext:
+        privileged: true
+        runAsUser: 0
+# Try to create a privileged pod in production namespace
+oc apply -f test-privileged-pod.yaml
+
+# This should fail due to pod security standards
+# Check the error message
+oc get events -n production --sort-by='.lastTimestamp' | tail -5
