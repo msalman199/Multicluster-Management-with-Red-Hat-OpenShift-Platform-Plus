@@ -1,0 +1,526 @@
+Lab 8: Install and Configure Red Hat Quay
+Objectives
+By the end of this lab, you will be able to:
+
+Install Red Hat Quay on OpenShift using the Quay Operator
+Configure private repositories for secure container image management
+Verify integration between Red Hat Quay and OpenShift for seamless image distribution
+Understand the architecture and components of Red Hat Quay in a multicluster environment
+Implement security policies and access controls for container registries
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of OpenShift and Kubernetes concepts
+Familiarity with container images and registries
+Knowledge of YAML configuration files
+Experience with command-line interface (CLI) tools
+Understanding of role-based access control (RBAC) concepts
+Basic networking knowledge for service exposure
+Required Tools
+OpenShift CLI (oc) - version 4.10 or later
+Web browser for accessing OpenShift Console and Quay UI
+Text editor for configuration files
+Cloud Environment
+Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no VM setup required!
+
+Your lab environment includes:
+
+OpenShift cluster with administrative access
+Pre-installed OpenShift CLI tools
+Network connectivity for external registry access
+Lab Architecture Overview
+In this lab, you will deploy Red Hat Quay as a container registry solution on OpenShift. The architecture includes:
+
+Quay Registry: Core container registry service
+Quay Database: PostgreSQL database for metadata storage
+Redis Cache: Caching layer for improved performance
+Object Storage: Backend storage for container images
+Quay Config: Configuration management interface
+Task 1: Install Red Hat Quay on OpenShift
+Subtask 1.1: Verify OpenShift Cluster Access
+First, let's verify that your OpenShift cluster is accessible and ready for Quay installation.
+
+Login to OpenShift cluster:
+# Check cluster status
+oc cluster-info
+
+# Verify you have cluster-admin privileges
+oc auth can-i '*' '*'
+
+# List all nodes to ensure cluster is healthy
+oc get nodes
+Check available storage classes:
+# List storage classes (required for persistent volumes)
+oc get storageclass
+
+# Verify default storage class exists
+oc get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}'
+Subtask 1.2: Install the Quay Operator
+The Quay Operator simplifies the installation and management of Red Hat Quay on OpenShift.
+
+Create a dedicated namespace for Quay:
+# Create namespace for Quay installation
+oc create namespace quay-enterprise
+
+# Set the namespace as current context
+oc project quay-enterprise
+Create the Operator Group:
+cat << EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: quay-enterprise-operatorgroup
+  namespace: quay-enterprise
+spec:
+  targetNamespaces:
+  - quay-enterprise
+EOF
+Create the Subscription for Quay Operator:
+cat << EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: quay-operator
+  namespace: quay-enterprise
+spec:
+  channel: stable-3.8
+  installPlanApproval: Automatic
+  name: quay-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+Verify the operator installation:
+# Wait for the operator to be installed (may take 2-3 minutes)
+oc get csv -n quay-enterprise
+
+# Check operator pod status
+oc get pods -n quay-enterprise
+
+# Verify the operator is running
+oc get deployment quay-operator -n quay-enterprise
+Subtask 1.3: Deploy Red Hat Quay Instance
+Now we'll create a Quay registry instance using the installed operator.
+
+Create a QuayRegistry custom resource:
+cat << EOF | oc apply -f -
+apiVersion: quay.redhat.com/v1
+kind: QuayRegistry
+metadata:
+  name: quay-registry
+  namespace: quay-enterprise
+spec:
+  configBundleSecret: quay-config-bundle
+  components:
+  - kind: postgres
+    managed: true
+  - kind: redis
+    managed: true
+  - kind: objectstorage
+    managed: true
+  - kind: route
+    managed: true
+  - kind: monitoring
+    managed: true
+  - kind: tls
+    managed: true
+EOF
+Monitor the deployment progress:
+# Watch the QuayRegistry status
+oc get quayregistry quay-registry -n quay-enterprise -w
+
+# Check all pods in the namespace
+oc get pods -n quay-enterprise
+
+# Verify services are created
+oc get svc -n quay-enterprise
+Wait for deployment completion:
+# Check the registry status (should show "Available")
+oc get quayregistry quay-registry -n quay-enterprise -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+
+# Get the Quay route URL
+QUAY_URL=$(oc get route quay-registry-quay -n quay-enterprise -o jsonpath='{.spec.host}')
+echo "Quay Registry URL: https://$QUAY_URL"
+Subtask 1.4: Access Quay Web Interface
+Get the initial admin credentials:
+# Get the admin username
+ADMIN_USER=$(oc get secret quay-registry-quay-super-user -n quay-enterprise -o jsonpath='{.data.username}' | base64 -d)
+
+# Get the admin password
+ADMIN_PASS=$(oc get secret quay-registry-quay-super-user -n quay-enterprise -o jsonpath='{.data.password}' | base64 -d)
+
+echo "Admin Username: $ADMIN_USER"
+echo "Admin Password: $ADMIN_PASS"
+echo "Quay URL: https://$QUAY_URL"
+Login to Quay web interface:
+Open your web browser
+Navigate to the Quay URL displayed above
+Login with the admin credentials
+Accept any SSL certificate warnings (self-signed certificate)
+Task 2: Configure Private Repositories
+Subtask 2.1: Create Organizations and Teams
+Organizations in Quay help manage repositories and user access at scale.
+
+Create a new organization via web interface:
+
+Click on Create New Organization in the Quay web interface
+Enter organization name: development-team
+Click Create Organization
+Create a team within the organization:
+
+Navigate to the development-team organization
+Click on Teams and Membership tab
+Click Create New Team
+Enter team name: developers
+Set permissions: Admin
+Click Create Team
+Create organization via CLI (alternative method):
+
+# Create organization using Quay API
+curl -X POST \
+  https://$QUAY_URL/api/v1/organization/ \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "production-team",
+    "email": "admin@company.com"
+  }'
+Subtask 2.2: Create Private Repositories
+Create a private repository via web interface:
+
+Navigate to the development-team organization
+Click Create New Repository
+Repository name: webapp-frontend
+Visibility: Private
+Repository description: Frontend application container images
+Click Create Private Repository
+Create additional repositories:
+
+# Set API token (get from Quay web interface: Account Settings > Generate Token)
+# For this lab, we'll use the web interface method
+Configure repository permissions:
+Go to the webapp-frontend repository
+Click Settings tab
+Click User and Robot Permissions
+Add the developers team with Write permissions
+Subtask 2.3: Create Robot Accounts
+Robot accounts provide programmatic access to repositories.
+
+Create a robot account:
+
+Navigate to the development-team organization
+Click Robot Accounts tab
+Click Create Robot Account
+Robot name: ci-pipeline
+Description: CI/CD pipeline access
+Click Create Robot Account
+Download robot credentials:
+
+Click on the created robot account
+Download the Docker Login credentials
+Save the JSON file for later use
+Assign repository permissions to robot:
+
+Go to the webapp-frontend repository
+Click Settings > User and Robot Permissions
+Add robot development-team+ci-pipeline with Write permissions
+Subtask 2.4: Configure Repository Security Scanning
+Enable security scanning:
+
+Navigate to the webapp-frontend repository
+Click Settings tab
+Find Repository Visibility section
+Enable Security Scanning
+Click Save Changes
+Configure vulnerability notifications:
+
+In repository settings, go to Notifications
+Click Create Notification
+Event: Vulnerability Detected
+Method: Email
+Email: security@company.com
+Click Create Notification
+Task 3: Verify Integration with OpenShift
+Subtask 3.1: Configure OpenShift to Use Quay Registry
+Create a secret for Quay authentication:
+# Create docker-registry secret using robot account credentials
+oc create secret docker-registry quay-robot-secret \
+  --docker-server=$QUAY_URL \
+  --docker-username="development-team+ci-pipeline" \
+  --docker-password="<ROBOT_TOKEN>" \
+  --docker-email="robot@company.com" \
+  -n default
+
+# Link the secret to the default service account
+oc secrets link default quay-robot-secret --for=pull
+Create a test namespace for deployment:
+# Create test namespace
+oc create namespace quay-test
+
+# Copy the secret to the test namespace
+oc get secret quay-robot-secret -n default -o yaml | \
+  sed 's/namespace: default/namespace: quay-test/' | \
+  oc apply -f -
+
+# Link secret in test namespace
+oc secrets link default quay-robot-secret --for=pull -n quay-test
+Subtask 3.2: Push a Test Image to Quay
+Build and tag a test image:
+# Create a simple test application
+mkdir test-app && cd test-app
+
+cat << EOF > Dockerfile
+FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+RUN microdnf install -y httpd && microdnf clean all
+COPY index.html /var/www/html/
+EXPOSE 80
+CMD ["httpd", "-D", "FOREGROUND"]
+EOF
+
+cat << EOF > index.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Quay Integration Test</title>
+</head>
+<body>
+    <h1>Hello from Quay Registry!</h1>
+    <p>This image was successfully pushed to and pulled from Red Hat Quay.</p>
+</body>
+</html>
+EOF
+Build the image using OpenShift BuildConfig:
+# Create a BuildConfig
+cat << EOF | oc apply -f -
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: test-app-build
+  namespace: quay-test
+spec:
+  output:
+    to:
+      kind: DockerImage
+      name: $QUAY_URL/development-team/webapp-frontend:v1.0
+    pushSecret:
+      name: quay-robot-secret
+  source:
+    type: Git
+    git:
+      uri: https://github.com/openshift/ruby-hello-world.git
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+EOF
+Start the build:
+# Start build from local directory
+oc start-build test-app-build --from-dir=. --follow -n quay-test
+
+# Check build status
+oc get builds -n quay-test
+Subtask 3.3: Deploy Application Using Quay Image
+Create a deployment using the Quay image:
+cat << EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-frontend
+  namespace: quay-test
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp-frontend
+  template:
+    metadata:
+      labels:
+        app: webapp-frontend
+    spec:
+      containers:
+      - name: webapp
+        image: $QUAY_URL/development-team/webapp-frontend:v1.0
+        ports:
+        - containerPort: 80
+      imagePullSecrets:
+      - name: quay-robot-secret
+EOF
+Create a service and route:
+# Create service
+oc expose deployment webapp-frontend --port=80 -n quay-test
+
+# Create route
+oc expose service webapp-frontend -n quay-test
+
+# Get the route URL
+APP_URL=$(oc get route webapp-frontend -n quay-test -o jsonpath='{.spec.host}')
+echo "Application URL: http://$APP_URL"
+Verify the deployment:
+# Check pod status
+oc get pods -n quay-test -l app=webapp-frontend
+
+# Check deployment status
+oc get deployment webapp-frontend -n quay-test
+
+# Test the application
+curl -I http://$APP_URL
+Subtask 3.4: Verify Image Pull Events
+Check image pull events in Quay:
+
+Navigate to the Quay web interface
+Go to the webapp-frontend repository
+Click on Usage Logs tab
+Verify you can see pull events from OpenShift
+Monitor repository activity:
+
+# Check events in OpenShift
+oc get events -n quay-test --sort-by='.lastTimestamp'
+
+# Verify image details
+oc describe deployment webapp-frontend -n quay-test | grep Image
+Subtask 3.5: Test Image Updates and Rolling Deployments
+Update the application and push new version:
+# Update the HTML content
+cat << EOF > index.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Quay Integration Test - Updated</title>
+</head>
+<body>
+    <h1>Hello from Quay Registry - Version 2!</h1>
+    <p>This demonstrates rolling updates with Quay integration.</p>
+    <p>Build timestamp: $(date)</p>
+</body>
+</html>
+EOF
+
+# Build new version
+oc start-build test-app-build --from-dir=. --follow -n quay-test
+Update deployment with new image:
+# Update deployment to use new image version
+oc set image deployment/webapp-frontend webapp=$QUAY_URL/development-team/webapp-frontend:v2.0 -n quay-test
+
+# Watch rolling update
+oc rollout status deployment/webapp-frontend -n quay-test
+
+# Verify new version
+curl http://$APP_URL
+Troubleshooting Common Issues
+Issue 1: Operator Installation Fails
+Symptoms: Operator pods fail to start or CSV shows failed status
+
+Solution:
+
+# Check operator logs
+oc logs deployment/quay-operator -n quay-enterprise
+
+# Verify subscription status
+oc get subscription quay-operator -n quay-enterprise -o yaml
+
+# Check install plan
+oc get installplan -n quay-enterprise
+Issue 2: Quay Registry Not Accessible
+Symptoms: Cannot access Quay web interface
+
+Solution:
+
+# Check route status
+oc get route quay-registry-quay -n quay-enterprise
+
+# Verify pods are running
+oc get pods -n quay-enterprise
+
+# Check service endpoints
+oc get endpoints -n quay-enterprise
+Issue 3: Image Push/Pull Authentication Fails
+Symptoms: Authentication errors when pushing or pulling images
+
+Solution:
+
+# Verify robot account credentials
+oc get secret quay-robot-secret -o yaml
+
+# Test docker login
+docker login $QUAY_URL -u "development-team+ci-pipeline" -p "<ROBOT_TOKEN>"
+
+# Check secret is linked to service account
+oc describe sa default -n quay-test
+Issue 4: Storage Issues
+Symptoms: Pods stuck in pending state due to PVC issues
+
+Solution:
+
+# Check PVC status
+oc get pvc -n quay-enterprise
+
+# Verify storage class
+oc get storageclass
+
+# Check available storage
+oc describe pvc -n quay-enterprise
+Security Best Practices
+Access Control
+Use robot accounts for automated systems
+Implement least-privilege access principles
+Regularly rotate robot account tokens
+Use teams and organizations for access management
+Image Security
+Enable vulnerability scanning on all repositories
+Set up notifications for security issues
+Implement image signing policies
+Regular security audits of stored images
+Network Security
+Use TLS for all communications
+Implement network policies to restrict access
+Consider using private networks for internal registries
+Monitor access logs regularly
+Performance Optimization
+Scaling Considerations
+# Scale Quay components for high availability
+oc scale deployment quay-registry-quay --replicas=3 -n quay-enterprise
+
+# Monitor resource usage
+oc top pods -n quay-enterprise
+
+# Configure resource limits
+oc set resources deployment quay-registry-quay --limits=cpu=2,memory=4Gi -n quay-enterprise
+Caching Configuration
+Configure Redis for optimal caching
+Implement CDN for global image distribution
+Use local storage for frequently accessed images
+Conclusion
+Congratulations! You have successfully completed Lab 8: Install and Configure Red Hat Quay. In this comprehensive lab, you have accomplished the following:
+
+Key Achievements
+Successfully Installed Red Hat Quay: You deployed a complete Quay registry solution on OpenShift using the Quay Operator, including all necessary components like PostgreSQL database, Redis cache, and object storage.
+
+Configured Private Repositories: You created organizations, teams, and private repositories with proper access controls, demonstrating enterprise-grade container registry management.
+
+Established OpenShift Integration: You verified seamless integration between Quay and OpenShift by pushing images to Quay and deploying applications that pull from your private registry.
+
+Implemented Security Best Practices: You configured robot accounts, repository permissions, vulnerability scanning, and secure authentication mechanisms.
+
+Why This Matters
+Red Hat Quay serves as a critical component in modern container-based application delivery pipelines. The skills you've developed in this lab are essential for:
+
+Enterprise Container Management: Managing container images at scale across multiple clusters and environments
+Security and Compliance: Implementing secure image storage with vulnerability scanning and access controls
+DevOps Integration: Enabling automated CI/CD pipelines with secure image repositories
+Multicluster Operations: Supporting image distribution across multiple OpenShift clusters
+Real-World Applications
+The configuration you've implemented mirrors production environments where organizations need:
+
+Secure, private container registries
+Integration with Kubernetes/OpenShift platforms
+Automated image scanning and security policies
+Role-based access control for development teams
+High availability and scalable image storage
+Next Steps
+To further enhance your Red Hat Quay expertise, consider:
+
+Implementing geo-replication for global image distribution
+Configuring advanced security policies and image signing
+Integrating with external authentication systems (LDAP/OIDC)
+Setting up monitoring and alerting for registry operations
+Exploring Quay's API for automation and integration
+This lab has provided you with practical, hands-on experience that directly applies to the Multicluster Management with Red Hat OpenShift Platform Plus certification and real-world enterprise container registry management scenarios.
