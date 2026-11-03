@@ -1,0 +1,223 @@
+Lab: Backup and Restore RHACM Configurations
+Objectives
+By the end of this lab, students will be able to:
+
+Explain why backing up Red Hat Advanced Cluster Management (RHACM) configuration objects is critical for disaster recovery
+Create a backup of key RHACM custom resources using oc commands wrapped in a shell script
+Simulate the loss of a configuration object and restore it from a backup file
+Validate that a restored configuration matches the original
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes/OpenShift concepts (namespaces, custom resources)
+Familiarity with RHACM fundamentals (Policies, ManagedClusters)
+Basic Linux command-line skills
+Required Tools and Access
+Access to an OpenShift cluster with RHACM installed and cluster administrator privileges
+The oc CLI tool installed and logged in to the cluster (oc login ...)
+No additional packages need to be installed. Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment.
+
+This lab focuses on backing up and restoring RHACM configuration objects (Policies, ManagedClusters, etc.) that live in the Kubernetes API. It does not cover full etcd disaster recovery â that is a separate, cluster-level procedure documented in the OpenShift disaster recovery guide and is out of scope here.
+
+Task 1: Back Up RHACM Configuration Objects
+Subtask 1.1: Verify RHACM Is Installed
+# Check if the RHACM namespace exists
+oc get namespace open-cluster-management
+
+# Verify RHACM pods are running
+oc get pods -n open-cluster-management
+You should see the open-cluster-management namespace and a set of Running pods.
+
+Subtask 1.2: Create a Test Policy to Back Up
+To have something concrete to back up and restore, create a small test namespace and a test Policy.
+
+# Create a test namespace
+oc create namespace rhacm-lab-test
+
+# Create a simple test Policy
+cat > /tmp/test-policy.yaml << 'EOF'
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: test-restore-policy
+  namespace: rhacm-lab-test
+  labels:
+    lab: backup-restore-demo
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: test-config-policy
+        spec:
+          remediationAction: inform
+          severity: low
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: test-namespace
+EOF
+
+# Apply the test policy
+oc apply -f /tmp/test-policy.yaml
+
+# Confirm it exists
+oc get policy test-restore-policy -n rhacm-lab-test
+Deliverable: The command oc get policy test-restore-policy -n rhacm-lab-test returns the policy with a NAME of test-restore-policy.
+
+Subtask 1.3: Create the Backup Script
+Create a directory to hold backups and a script that backs up the Policy object and the test namespace's ManagedClusterSet-independent resources into timestamped YAML files.
+
+# Create the backup directory
+mkdir -p /home/student/rhacm-backups/configs
+
+cat > /home/student/rhacm-backups/backup-rhacm-configs.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# RHACM Configuration Backup Script
+BACKUP_DIR="/home/student/rhacm-backups"
+DATE=$(date +%Y%m%d-%H%M%S)
+CONFIG_BACKUP_DIR="$BACKUP_DIR/configs/backup-$DATE"
+
+echo "Starting RHACM configuration backup at $(date)"
+
+mkdir -p "$CONFIG_BACKUP_DIR"
+
+echo "Backing up Policies in rhacm-lab-test..."
+oc get policies -n rhacm-lab-test -o yaml > "$CONFIG_BACKUP_DIR/policies.yaml"
+
+echo "Backing up ManagedClusters (cluster-scoped)..."
+oc get managedclusters -o yaml > "$CONFIG_BACKUP_DIR/managedclusters.yaml"
+
+cat > "$CONFIG_BACKUP_DIR/backup-manifest.txt" << EOL
+RHACM Configuration Backup
+Date: $(date)
+Backup Directory: $CONFIG_BACKUP_DIR
+Components Backed Up:
+- Policies (namespace: rhacm-lab-test)
+- ManagedClusters
+EOL
+
+echo "Configuration backup completed successfully!"
+echo "Backup location: $CONFIG_BACKUP_DIR"
+EOF
+
+chmod +x /home/student/rhacm-backups/backup-rhacm-configs.sh
+Subtask 1.4: Run the Backup
+# Execute the backup script
+/home/student/rhacm-backups/backup-rhacm-configs.sh
+
+# List the backup that was created
+ls -la /home/student/rhacm-backups/configs/
+Deliverable: A new directory named backup-<timestamp> exists under /home/student/rhacm-backups/configs/, containing policies.yaml, managedclusters.yaml, and backup-manifest.txt. Confirm with:
+
+LATEST_BACKUP=$(ls -1 /home/student/rhacm-backups/configs/ | sort -r | head -1)
+echo "Latest backup: $LATEST_BACKUP"
+cat "/home/student/rhacm-backups/configs/$LATEST_BACKUP/backup-manifest.txt"
+Expected output shows the manifest text listing the two backed-up components.
+
+Task 2: Simulate Loss and Restore Configuration
+Subtask 2.1: Simulate Configuration Loss
+Delete the test Policy to simulate an accidental loss of configuration.
+
+# Delete the test policy to simulate loss
+oc delete policy test-restore-policy -n rhacm-lab-test
+
+# Confirm it is gone
+oc get policy test-restore-policy -n rhacm-lab-test
+Expected result: The get command returns an error similar to Error from server (NotFound): policies.policy.open-cluster-management.io "test-restore-policy" not found. This confirms the simulated loss.
+
+Subtask 2.2: Create the Restore Script
+This script re-applies the Policy backup file from a chosen backup directory. Note the corrected, consistent use of BACKUP_DIR throughout (no typos).
+
+cat > /home/student/rhacm-backups/restore-rhacm-configs.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# RHACM Configuration Restore Script
+#
+# NOTE ON SCOPE: This script restores configuration objects (like Policies)
+# that still exist as YAML backups on disk, by re-applying them to a live,
+# functioning cluster. It is suitable for recovering from accidental
+# deletion or modification of individual resources. It is NOT a substitute
+# for full etcd backup/restore, which is required if the cluster itself
+# or its entire API datastore has been lost. For that scenario, follow
+# the OpenShift etcd disaster recovery procedure separately.
+
+BACKUP_DIR="/home/student/rhacm-backups"
+
+list_backups() {
+    echo "Available configuration backups:"
+    ls -1 "$BACKUP_DIR/configs/" | grep "backup-" | sort -r
+}
+
+restore_backup() {
+    local backup_name="$1"
+    local restore_dir="$BACKUP_DIR/configs/$backup_name"
+
+    if [ ! -d "$restore_dir" ]; then
+        echo "Error: Backup directory $restore_dir not found"
+        exit 1
+    fi
+
+    echo "Starting restoration from backup: $backup_name"
+    echo "Restore directory: $restore_dir"
+
+    if [ -f "$restore_dir/policies.yaml" ]; then
+        echo "Restoring Policies..."
+        oc apply -f "$restore_dir/policies.yaml"
+    else
+        echo "No policies.yaml found in $restore_dir"
+    fi
+
+    echo "Configuration restoration completed."
+}
+
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <backup-name>"
+    echo ""
+    list_backups
+    exit 1
+fi
+
+restore_backup "$1"
+EOF
+
+chmod +x /home/student/rhacm-backups/restore-rhacm-configs.sh
+Subtask 2.3: Run the Restore
+# Identify the latest backup
+LATEST_BACKUP=$(ls -1 /home/student/rhacm-backups/configs/ | sort -r | head -1)
+echo "Restoring from: $LATEST_BACKUP"
+
+# Run the restore script
+/home/student/rhacm-backups/restore-rhacm-configs.sh "$LATEST_BACKUP"
+Deliverable: The script prints Restoring Policies... followed by policy.policy.open-cluster-management.io/test-restore-policy created (or configured), and finally Configuration restoration completed.
+
+Subtask 2.4: Verify the Restoration
+# Confirm the policy exists again
+oc get policy test-restore-policy -n rhacm-lab-test
+
+# Confirm the spec matches the original (remediationAction should be "inform")
+oc get policy test-restore-policy -n rhacm-lab-test -o jsonpath='{.spec.remediationAction}{"\n"}'
+Expected result: The first command shows test-restore-policy present in the rhacm-lab-test namespace. The second command prints inform, confirming the restored object's spec matches what was originally backed up.
+
+Expected Outcomes
+A working backup script that captures RHACM Policy and ManagedCluster configuration into timestamped, human-readable YAML files
+A working restore script (with no variable typos) that re-applies a chosen backup to the cluster
+Hands-on confirmation that a deleted Policy can be recovered from a configuration backup, with a clear understanding of this method's limits versus full etcd disaster recovery
+Troubleshooting
+Error: Error from server (NotFound): namespaces "open-cluster-management" not found Fix: RHACM is not installed on this cluster, or you are logged into the wrong cluster. Run oc whoami --show-server to confirm the cluster, then re-check with your instructor that RHACM is installed.
+
+Error: error: the path "/home/student/rhacm-backups/configs/backup-.../policies.yaml" does not exist Fix: The backup script did not run successfully. Re-run /home/student/rhacm-backups/backup-rhacm-configs.sh and check its output for errors before attempting the restore.
+
+Error: Error from server (Forbidden): policies.policy.open-cluster-management.io is forbidden Fix: Your user lacks permissions on the Policy CRD. Confirm you are logged in with cluster-admin privileges using oc auth can-i create policies -n rhacm-lab-test; it should return yes.
+
+Conclusion
+In this lab, students built and ran a complete, working backup-and-restore cycle for RHACM configuration objects: a backup script that exports Policies and ManagedClusters to timestamped YAML files, and a restore script that re-applies those files to recover a deleted resource. By deliberately deleting a test Policy and successfully recovering it with oc apply, students confirmed both that the scripts function correctly end to end and that this technique is appropriate for recovering individual lost or modified configuration objects. Students also learned the important distinction between this configuration-level backup approach and full etcd-based disaster recovery, which is required if the cluster's underlying datastore itself is lost.
