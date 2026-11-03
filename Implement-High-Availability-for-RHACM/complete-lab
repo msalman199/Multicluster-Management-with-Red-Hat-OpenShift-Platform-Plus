@@ -1,0 +1,425 @@
+Lab 19: Implement High Availability for RHACM
+Objectives
+By the end of this lab, students will be able to:
+
+Configure Red Hat Advanced Cluster Management (RHACM) in a high-availability setup across a primary and secondary hub cluster
+Implement failover mechanisms and redundancy for RHACM hub components
+Test disaster recovery scenarios and validate failover functionality
+Build monitoring and automated recovery tooling for a high-availability RHACM environment
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of OpenShift Container Platform concepts
+Familiarity with Kubernetes cluster administration and YAML configuration files
+Knowledge of RHACM fundamentals and basic operations (hubs, managed clusters, klusterlets)
+Understanding of networking concepts including load balancing
+Basic knowledge of persistent storage in Kubernetes
+Required Tools
+This lab assumes access to the Al Nafi pre-configured lab environment described below, which already has the required CLI tools installed. If you are replicating this in your own practice environment, install the OpenShift CLI before starting:
+
+# Verify the OpenShift CLI is available
+oc version --client
+
+# If not installed, download the matching oc binary for your OS from your
+# OpenShift cluster's "Command Line Tools" page and place it on your PATH
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Environment Details
+Your lab environment includes:
+
+Two OpenShift clusters configured as primary-hub and secondary-hub contexts in your kubeconfig
+One managed cluster registered to the primary hub, reachable via the managed-cluster context
+Pre-installed OpenShift CLI tools
+Network connectivity between the two hub clusters
+A default storage class usable for PersistentVolumeClaims
+Confirm your available contexts before starting:
+
+oc config get-contexts
+You should see primary-hub, secondary-hub, and managed-cluster listed as available contexts. All commands in this lab assume you switch between them with oc config use-context <name>.
+
+Task 1: Configure RHACM High Availability on the Primary Hub
+Subtask 1.1: Install RHACM with a High-Availability MultiClusterHub
+Step 1: Verify Cluster Readiness
+oc config use-context primary-hub
+
+# Check cluster status
+oc get nodes
+
+# Verify cluster operators are healthy
+oc get clusteroperators
+
+# Check available storage classes
+oc get storageclass
+Step 2: Create Namespaces and Operator Groups
+cat << 'EOF' | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-cluster-management
+  labels:
+    name: open-cluster-management
+EOF
+
+cat << 'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: open-cluster-management-operatorgroup
+  namespace: open-cluster-management
+spec:
+  targetNamespaces:
+  - open-cluster-management
+EOF
+Step 3: Install the RHACM Operator
+cat << 'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: advanced-cluster-management
+  namespace: open-cluster-management
+spec:
+  channel: release-2.9
+  installPlanApproval: Automatic
+  name: advanced-cluster-management
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for the operator's CSV to reach the Succeeded phase
+oc wait --for=jsonpath='{.status.phase}'=Succeeded \
+  $(oc get csv -n open-cluster-management -o name | grep advanced-cluster-management) \
+  -n open-cluster-management --timeout=600s
+Step 4: Create a High-Availability MultiClusterHub
+cat << 'EOF' | oc apply -f -
+apiVersion: operator.open-cluster-management.io/v1
+kind: MultiClusterHub
+metadata:
+  name: multiclusterhub
+  namespace: open-cluster-management
+spec:
+  availabilityConfig: High
+  enableClusterBackup: true
+EOF
+
+# Wait for the hub to report a Running status
+oc wait --for=jsonpath='{.status.phase}'=Running \
+  mch/multiclusterhub -n open-cluster-management --timeout=900s
+Deliverable: Run oc get mch multiclusterhub -n open-cluster-management -o jsonpath='{.status.phase}'. The expected output is Running, confirming the primary hub is installed with availabilityConfig: High, which schedules two replicas of each HA-aware RHACM deployment for redundancy.
+
+Subtask 1.2: Prepare the Secondary Hub as a Warm Standby
+Step 1: Install RHACM on the Secondary Hub
+oc config use-context secondary-hub
+
+cat << 'EOF' | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-cluster-management
+  labels:
+    name: open-cluster-management
+EOF
+
+cat << 'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: open-cluster-management-operatorgroup
+  namespace: open-cluster-management
+spec:
+  targetNamespaces:
+  - open-cluster-management
+EOF
+
+cat << 'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: advanced-cluster-management
+  namespace: open-cluster-management
+spec:
+  channel: release-2.9
+  installPlanApproval: Automatic
+  name: advanced-cluster-management
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+oc wait --for=jsonpath='{.status.phase}'=Succeeded \
+  $(oc get csv -n open-cluster-management -o name | grep advanced-cluster-management) \
+  -n open-cluster-management --timeout=600s
+Step 2: Create the Standby MultiClusterHub
+cat << 'EOF' | oc apply -f -
+apiVersion: operator.open-cluster-management.io/v1
+kind: MultiClusterHub
+metadata:
+  name: multiclusterhub
+  namespace: open-cluster-management
+spec:
+  availabilityConfig: High
+  enableClusterBackup: true
+EOF
+
+oc wait --for=jsonpath='{.status.phase}'=Running \
+  mch/multiclusterhub -n open-cluster-management --timeout=900s
+Step 3: Back Up Primary Hub Resources for Restore on the Secondary
+RHACM's cluster backup and restore operator (enabled via enableClusterBackup: true) uses OADP/Velero under the hood. For this lab we validate the mechanism using a lightweight manual export, which mirrors what the backup operator captures.
+
+oc config use-context primary-hub
+
+BACKUP_DIR="/tmp/rhacm-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP_DIR"
+
+oc get mch multiclusterhub -n open-cluster-management -o yaml > "$BACKUP_DIR/multiclusterhub.yaml"
+oc get managedclusters -o yaml > "$BACKUP_DIR/managedclusters.yaml"
+oc get managedclustersets -o yaml > "$BACKUP_DIR/managedclustersets.yaml" 2>/dev/null || true
+
+echo "Backup written to $BACKUP_DIR"
+ls -la "$BACKUP_DIR"
+Deliverable: Both oc get mch multiclusterhub -n open-cluster-management -o jsonpath='{.status.phase}' commands (run against primary-hub and secondary-hub) return Running, and $BACKUP_DIR contains three non-empty YAML files. This confirms both hubs are independently healthy and that you have a restorable snapshot of primary hub state.
+
+Task 2: Test Failover from Primary to Secondary Hub
+Subtask 2.1: Build a Health Check Script
+Step 1: Create the Health Check Script
+cat << 'EOF' > /tmp/rhacm-health-check.sh
+#!/bin/bash
+# RHACM Health Check Script
+# Usage: rhacm-health-check.sh <oc-context-name>
+
+CONTEXT=$1
+if [ -z "$CONTEXT" ]; then
+  echo "Usage: $0 <context-name>"
+  exit 1
+fi
+
+oc config use-context "$CONTEXT" >/dev/null 2>&1
+
+echo "=== RHACM Health Check ($CONTEXT) ==="
+echo "Timestamp: $(date)"
+
+MCH_STATUS=$(oc get mch multiclusterhub -n open-cluster-management \
+  -o jsonpath='{.status.phase}' 2>/dev/null)
+if [ "$MCH_STATUS" = "Running" ]; then
+  echo "PASS: MultiClusterHub is Running"
+else
+  echo "FAIL: MultiClusterHub status is '$MCH_STATUS'"
+fi
+
+NOT_READY=$(oc get pods -n open-cluster-management --no-headers 2>/dev/null \
+  | awk '{print $3}' | grep -vc "Running\|Completed")
+echo "Pods not in Running/Completed state: $NOT_READY"
+
+echo "=== Health Check Complete ==="
+EOF
+
+chmod +x /tmp/rhacm-health-check.sh
+Step 2: Run the Health Check Against Both Hubs
+/tmp/rhacm-health-check.sh primary-hub
+/tmp/rhacm-health-check.sh secondary-hub
+Deliverable: Both invocations print PASS: MultiClusterHub is Running and Pods not in Running/Completed state: 0. This establishes a baseline before simulating a failure.
+
+Subtask 2.2: Simulate Primary Hub Failure
+Step 1: Scale Down Primary Hub Components
+oc config use-context primary-hub
+
+echo "Simulating primary hub failure..."
+oc scale deployment cluster-manager -n open-cluster-management --replicas=0
+oc scale deployment multiclusterhub-repo -n open-cluster-management --replicas=0
+
+echo "Waiting for components to scale down..."
+sleep 30
+
+oc get pods -n open-cluster-management
+Step 2: Confirm the Failure Is Detected
+/tmp/rhacm-health-check.sh primary-hub
+Deliverable: The health check now reports Pods not in Running/Completed state: 0 for pod count (since the deployments are scaled to zero, no failing pods exist) but oc get deployment cluster-manager -n open-cluster-management -o jsonpath='{.status.availableReplicas}' returns empty or 0, confirming the simulated outage.
+
+Subtask 2.3: Fail Over to the Secondary Hub
+Step 1: Verify the Secondary Hub Is Ready to Take Over
+/tmp/rhacm-health-check.sh secondary-hub
+Since the secondary hub was installed as a fully running MultiClusterHub in Task 1, it does not need to be "activated" â it is already serving. This models RHACM's recommended active/passive hub pattern, where the secondary hub is fully installed and the RHACM backup/restore operator (via OADP/Velero) restores managed cluster and application state onto it during a real failover.
+
+Step 2: Restore Managed Cluster Registrations onto the Secondary Hub
+oc config use-context managed-cluster
+
+# Save the current klusterlet configuration
+oc get klusterlet klusterlet -o yaml > /tmp/klusterlet-backup.yaml
+
+# Retrieve the secondary hub's API server URL
+SECONDARY_HUB_URL=$(oc config view -o jsonpath='{.clusters[?(@.name=="secondary-hub")].cluster.server}')
+echo "Secondary hub API server: $SECONDARY_HUB_URL"
+
+oc patch klusterlet klusterlet --type merge -p "{\"spec\":{\"externalServerURLs\":[{\"url\":\"$SECONDARY_HUB_URL\"}]}}"
+Step 3: Verify Reconnection on the Secondary Hub
+oc config use-context secondary-hub
+
+echo "Checking managed cluster status after failover..."
+oc get managedclusters
+
+oc wait --for=condition=ManagedClusterConditionAvailable \
+  managedcluster managed-cluster-1 --timeout=300s
+
+oc describe managedcluster managed-cluster-1
+Deliverable: oc get managedclusters run against secondary-hub shows managed-cluster-1 with AVAILABLE set to True, and the oc wait command exits successfully rather than timing out. This confirms the managed cluster has re-registered against the secondary hub after the simulated primary failure.
+
+Task 3: Monitor the HA Setup and Automate Recovery
+Subtask 3.1: Deploy an Alerting Rule for Hub Availability
+Step 1: Create a PrometheusRule for Hub Health
+oc config use-context primary-hub
+
+cat << 'EOF' | oc apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rhacm-ha-alerts
+  namespace: open-cluster-management
+  labels:
+    role: alert-rules
+spec:
+  groups:
+  - name: rhacm.ha.rules
+    rules:
+    - alert: RHACMClusterManagerDown
+      expr: kube_deployment_status_replicas_available{namespace="open-cluster-management",deployment="cluster-manager"} == 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "RHACM cluster-manager has no available replicas"
+        description: "The cluster-manager deployment in open-cluster-management has been unavailable for more than 2 minutes."
+
+    - alert: ManagedClusterUnavailable
+      expr: acm_managed_cluster_worker_cores{available="false"} > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "A managed cluster is reporting unavailable"
+        description: "One or more managed clusters have been unavailable for more than 5 minutes."
+EOF
+Deliverable: Run oc get prometheusrule rhacm-ha-alerts -n open-cluster-management. The command returns the object with AGE populated, confirming the rule was accepted by the cluster's monitoring stack. (Exact metric availability depends on your monitoring stack configuration; the goal here is a syntactically valid, deployable alerting rule you can adapt to your metrics source.)
+
+Subtask 3.2: Build an Automated Recovery Job
+Step 1: Create the Recovery Script as a ConfigMap
+cat << 'EOF' > /tmp/rhacm-auto-recovery.sh
+#!/bin/bash
+# RHACM Automated Recovery Script
+# Checks primary hub health and reports readiness to fail over.
+
+LOG_FILE="/tmp/rhacm-recovery.log"
+RECOVERY_THRESHOLD=3
+FAILED_CHECKS=0
+
+log_message() {
+  echo "$(date): $1" | tee -a "$LOG_FILE"
+}
+
+check_hub_health() {
+  local mch_status
+  mch_status=$(oc get mch multiclusterhub -n open-cluster-management \
+    -o jsonpath='{.status.phase}' 2>/dev/null)
+  [ "$mch_status" = "Running" ]
+}
+
+log_message "Starting recovery monitor loop (threshold=$RECOVERY_THRESHOLD)"
+
+for i in $(seq 1 5); do
+  if check_hub_health; then
+    log_message "Hub is healthy (check $i)"
+    FAILED_CHECKS=0
+  else
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    log_message "Hub health check failed ($FAILED_CHECKS/$RECOVERY_THRESHOLD)"
+    if [ "$FAILED_CHECKS" -ge "$RECOVERY_THRESHOLD" ]; then
+      log_message "Recovery threshold reached. Manual or automated failover to secondary-hub required."
+      exit 1
+    fi
+  fi
+  sleep 10
+done
+
+log_message "Monitor loop complete"
+EOF
+
+oc create configmap recovery-script \
+  --from-file=rhacm-auto-recovery.sh=/tmp/rhacm-auto-recovery.sh \
+  -n open-cluster-management --dry-run=client -o yaml | oc apply -f -
+Step 2: Create the Service Account, RBAC, and Recovery Job
+The Job's container needs an in-cluster service account with permission to read MultiClusterHub status, and it mounts the recovery script from the ConfigMap created above. Because the container runs oc commands against its own cluster, it uses the pod's projected service account token rather than a separate kubeconfig secret.
+
+cat << 'EOF' | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rhacm-recovery-sa
+  namespace: open-cluster-management
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rhacm-recovery-role
+  namespace: open-cluster-management
+rules:
+- apiGroups: ["operator.open-cluster-management.io"]
+  resources: ["multiclusterhubs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rhacm-recovery-rolebinding
+  namespace: open-cluster-management
+subjects:
+- kind: ServiceAccount
+  name: rhacm-recovery-sa
+  namespace: open-cluster-management
+roleRef:
+  kind: Role
+  name: rhacm-recovery-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+cat << 'EOF' | oc apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rhacm-recovery-job
+  namespace: open-cluster-management
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: rhacm-recovery-sa
+      restartPolicy: Never
+      containers:
+      - name: recovery
+        image: registry.redhat.io/openshift4/ose-cli:latest
+        command: ["/bin/bash", "/scripts/rhacm-auto-recovery.sh"]
+        volumeMounts:
+        - name: recovery-script
+          mountPath: /scripts
+      volumes:
+      - name: recovery-script
+        configMap:
+          name: recovery-script
+          defaultMode: 0755
+EOF
+Step 3: Verify the Job Ran and Inspect Its Output
+oc wait --for=condition=Complete job/rhacm-recovery-job \
+  -n open-cluster-management --timeout=180s
+
+oc logs job/rhacm-recovery-job -n open-cluster-management
+Deliverable: The oc wait command returns successfully, and oc logs job/rhacm-recovery-job shows repeated Hub is healthy lines from the in-cluster service account querying the MultiClusterHub resource. This confirms the Job authenticates correctly using its mounted service account token (no external kubeconfig needed since it runs against its own cluster) and that the recovery logic executes end to end.
+
+Expected Outcomes
+A primary and secondary OpenShift cluster each running a healthy, HA-configured MultiClusterHub (availabilityConfig: High)
+A validated failover procedure in which a managed cluster re-registers to the secondary hub after the primary hub's components are scaled down
+A working in-cluster recovery Job, backed by a ConfigMap script and scoped RBAC, that continuously checks hub health and reports when a failover threshold is crossed
+Troubleshooting
+oc wait on mch/multiclusterhub times out with phase stuck at Installing: Check oc get pods -n open-cluster-management for ImagePullBackOff or Pending pods; this usually indicates insufficient node resources or an unreachable image registry.
+Recovery Job fails with a permissions/forbidden error in its logs: Verify the RoleBinding subject namespace matches where the Job runs, and confirm the Role includes the multiclusterhubs resource under the correct apiGroups entry (operator.open-cluster-management.io).
+Conclusion
+In this lab you deployed RHACM in a high-availability configuration across two independent hub clusters, validated that a managed cluster can be re-registered to a secondary hub after simulating a primary hub failure, and built an in-cluster automated recovery Job backed by proper RBAC and a ConfigMap-mounted script. Along the way you practiced the core operational skills behind RHACM disaster recovery: health checking hub components, safely simulating an outage, executing a controlled failover, and codifying monitoring and recovery logic as Kubernetes-native resources. As a next step, consider extending this setup by enabling RHACM's built-in cluster backup and restore operator (OADP/Velero based) for full application and policy state replication, and by wiring the PrometheusRule alerts created here into your organization's real alerting pipeline. Before leaving the lab, clean up test resources with oc delete job rhacm-recovery-job -n open-cluster-management and oc delete mch multiclusterhub -n open-cluster-management on both hub contexts if you do not intend to keep the environment running.
