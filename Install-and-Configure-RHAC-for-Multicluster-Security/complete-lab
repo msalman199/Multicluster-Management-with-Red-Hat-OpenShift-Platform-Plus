@@ -1,0 +1,811 @@
+Lab 10: Install and Configure RHACS for Multicluster Security
+Objectives
+By the end of this lab, you will be able to:
+
+• Install Red Hat Advanced Cluster Security (RHACS) on OpenShift clusters • Configure comprehensive security policies for multicluster environments • Implement runtime protection mechanisms across multiple clusters • Perform vulnerability scanning and compliance assessments • Monitor and respond to security threats in real-time • Understand the architecture and components of RHACS • Configure network policies and admission controllers • Generate security reports and compliance dashboards
+
+Prerequisites
+Before starting this lab, you should have:
+
+• Basic understanding of Kubernetes and OpenShift concepts • Familiarity with container security principles • Knowledge of YAML configuration files • Experience with command-line interfaces • Understanding of network security concepts • Basic knowledge of compliance frameworks (CIS, NIST, PCI-DSS)
+
+Technical Requirements: • OpenShift cluster with cluster-admin privileges • Minimum 16GB RAM and 4 CPU cores available • Internet connectivity for downloading RHACS components • kubectl and oc CLI tools installed
+
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift clusters already set up. Simply click Start Lab to access your environment - no need to build your own VM or install OpenShift from scratch.
+
+Task 1: Install RHACS on OpenShift
+Subtask 1.1: Prepare the Environment
+First, let's verify our OpenShift cluster is ready and create the necessary namespace for RHACS.
+
+Step 1: Verify cluster access and status
+
+# Check cluster status
+oc cluster-info
+
+# Verify you have cluster-admin privileges
+oc auth can-i '*' '*' --all-namespaces
+
+# Check available nodes
+oc get nodes
+Step 2: Create the RHACS namespace
+
+# Create the stackrox namespace for RHACS
+oc create namespace stackrox
+
+# Verify namespace creation
+oc get namespaces | grep stackrox
+Step 3: Set up environment variables
+
+# Set environment variables for easier management
+export RHACS_NAMESPACE="stackrox"
+export CLUSTER_NAME="primary-cluster"
+export RHACS_VERSION="4.4.2"
+
+# Verify variables are set
+echo "RHACS Namespace: $RHACS_NAMESPACE"
+echo "Cluster Name: $CLUSTER_NAME"
+echo "RHACS Version: $RHACS_VERSION"
+Subtask 1.2: Install RHACS Operator
+Step 1: Create the OperatorGroup for RHACS
+
+# Create rhacs-operator-group.yaml
+cat << EOF > rhacs-operator-group.yaml
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: rhacs-operator-group
+  namespace: stackrox
+spec:
+  targetNamespaces:
+  - stackrox
+EOF
+Step 2: Apply the OperatorGroup
+
+# Apply the operator group
+oc apply -f rhacs-operator-group.yaml
+
+# Verify operator group creation
+oc get operatorgroup -n stackrox
+Step 3: Create the Subscription for RHACS Operator
+
+# Create rhacs-subscription.yaml
+cat << EOF > rhacs-subscription.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhacs-operator
+  namespace: stackrox
+spec:
+  channel: stable
+  name: rhacs-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+Step 4: Apply the subscription
+
+# Apply the subscription
+oc apply -f rhacs-subscription.yaml
+
+# Wait for operator installation (this may take 2-3 minutes)
+oc get csv -n stackrox -w
+Step 5: Verify operator installation
+
+# Check if the operator is running
+oc get pods -n stackrox
+
+# Verify the ClusterServiceVersion
+oc get csv -n stackrox | grep rhacs
+Subtask 1.3: Deploy RHACS Central
+Step 1: Create the Central custom resource
+
+# Create rhacs-central.yaml
+cat << EOF > rhacs-central.yaml
+apiVersion: platform.stackrox.io/v1alpha1
+kind: Central
+metadata:
+  name: stackrox-central-services
+  namespace: stackrox
+spec:
+  central:
+    exposure:
+      loadBalancer:
+        enabled: false
+        port: 443
+      nodePort:
+        enabled: false
+      route:
+        enabled: true
+    persistence:
+      persistentVolumeClaim:
+        claimName: stackrox-db
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "1500m"
+      limits:
+        memory: "8Gi"
+        cpu: "4000m"
+  egress:
+    connectivityPolicy: Online
+  scanner:
+    analyzer:
+      scaling:
+        autoScaling: Enabled
+        maxReplicas: 5
+        minReplicas: 2
+        replicas: 3
+    scannerComponent: Enabled
+EOF
+Step 2: Deploy RHACS Central
+
+# Apply the Central configuration
+oc apply -f rhacs-central.yaml
+
+# Monitor the deployment progress
+oc get pods -n stackrox -w
+Step 3: Wait for Central to be ready
+
+# Check Central status (wait until all pods are running)
+oc get central -n stackrox
+
+# Verify all components are running
+oc get pods -n stackrox | grep -E "(central|scanner)"
+Step 4: Get the Central route
+
+# Get the Central UI route
+CENTRAL_ROUTE=$(oc get route central -n stackrox -o jsonpath='{.spec.host}')
+echo "RHACS Central UI: https://$CENTRAL_ROUTE"
+
+# Save the route for later use
+echo "export CENTRAL_ROUTE=$CENTRAL_ROUTE" >> ~/.bashrc
+Subtask 1.4: Access RHACS Central UI
+Step 1: Get the admin password
+
+# Retrieve the admin password
+ADMIN_PASSWORD=$(oc get secret central-htpasswd -n stackrox -o jsonpath='{.data.password}' | base64 -d)
+echo "Admin Password: $ADMIN_PASSWORD"
+
+# Save credentials for easy access
+echo "Username: admin"
+echo "Password: $ADMIN_PASSWORD"
+echo "URL: https://$CENTRAL_ROUTE"
+Step 2: Access the RHACS Central UI
+
+# Open the RHACS Central UI in your browser
+echo "Access RHACS Central at: https://$CENTRAL_ROUTE"
+echo "Login with username 'admin' and the password shown above"
+Step 3: Verify Central installation through UI
+
+Navigate to the RHACS Central URL
+Login with admin credentials
+Verify the dashboard loads successfully
+Check that the cluster appears in the Platform Configuration
+Task 2: Configure Security Policies and Runtime Protection
+Subtask 2.1: Install Secured Cluster Services
+Step 1: Generate cluster init bundle
+
+# Create a script to generate init bundle via API
+cat << 'EOF' > generate-init-bundle.sh
+#!/bin/bash
+
+# Get admin password
+ADMIN_PASSWORD=$(oc get secret central-htpasswd -n stackrox -o jsonpath='{.data.password}' | base64 -d)
+CENTRAL_ROUTE=$(oc get route central -n stackrox -o jsonpath='{.spec.host}')
+
+# Generate init bundle
+curl -k -X POST \
+  -u admin:$ADMIN_PASSWORD \
+  -H "Content-Type: application/json" \
+  -d '{"name": "'"$CLUSTER_NAME"'"}' \
+  https://$CENTRAL_ROUTE/v1/cluster-init/init-bundles \
+  -o init-bundle-response.json
+
+# Extract the bundle
+cat init-bundle-response.json | jq -r '.kubectlBundle' | base64 -d > cluster-init-bundle.yaml
+
+echo "Init bundle generated successfully"
+EOF
+
+chmod +x generate-init-bundle.sh
+./generate-init-bundle.sh
+Step 2: Apply the init bundle
+
+# Apply the cluster init bundle
+oc apply -f cluster-init-bundle.yaml -n stackrox
+
+# Verify the secrets were created
+oc get secrets -n stackrox | grep -E "(sensor|collector|admission-control)"
+Step 3: Create SecuredCluster custom resource
+
+# Create secured-cluster.yaml
+cat << EOF > secured-cluster.yaml
+apiVersion: platform.stackrox.io/v1alpha1
+kind: SecuredCluster
+metadata:
+  name: stackrox-secured-cluster-services
+  namespace: stackrox
+spec:
+  clusterName: $CLUSTER_NAME
+  auditLogs:
+    collection: Auto
+  centralEndpoint: central.stackrox:443
+  admissionControl:
+    listenOnCreates: true
+    listenOnEvents: true
+    listenOnUpdates: true
+    enforceOnCreates: true
+    enforceOnUpdates: true
+    scanInline: true
+    disableBypass: false
+    timeoutSeconds: 20
+  perNode:
+    collector:
+      collection: EBPF
+      imageFlavor: Regular
+    taintToleration: TolerateTaints
+  sensor:
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "1000m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+EOF
+Step 4: Deploy SecuredCluster
+
+# Apply the SecuredCluster configuration
+oc apply -f secured-cluster.yaml
+
+# Monitor deployment
+oc get pods -n stackrox -w
+Step 5: Verify all components are running
+
+# Check all RHACS components
+oc get pods -n stackrox
+
+# Verify sensor is communicating with central
+oc logs -n stackrox deployment/sensor | grep -i "connection\|connected"
+Subtask 2.2: Configure Security Policies
+Step 1: Create custom security policy for container images
+
+# Create image-policy.yaml
+cat << EOF > image-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-image-policy
+  namespace: stackrox
+data:
+  policy.json: |
+    {
+      "name": "Custom Image Security Policy",
+      "description": "Enforce secure container images",
+      "disabled": false,
+      "categories": ["Security Best Practices"],
+      "lifecycleStages": ["DEPLOY"],
+      "eventSource": "NOT_APPLICABLE",
+      "exclusions": [],
+      "scope": [],
+      "severity": "HIGH_SEVERITY",
+      "policyVersion": "1.1",
+      "policySections": [
+        {
+          "sectionName": "Image Registry",
+          "policyGroups": [
+            {
+              "fieldName": "Image Registry",
+              "booleanOperator": "OR",
+              "negate": false,
+              "values": [
+                {
+                  "value": "registry.redhat.io/.*"
+                },
+                {
+                  "value": "quay.io/.*"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mitreAttackVectors": [],
+      "criteriaLocked": false,
+      "mitreVectorsLocked": false,
+      "isDefault": false
+    }
+EOF
+Step 2: Create runtime security policy
+
+# Create runtime-policy.yaml
+cat << EOF > runtime-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-security-policy
+  namespace: stackrox
+data:
+  policy.json: |
+    {
+      "name": "Runtime Process Monitoring",
+      "description": "Monitor and alert on suspicious runtime processes",
+      "disabled": false,
+      "categories": ["Runtime"],
+      "lifecycleStages": ["RUNTIME"],
+      "eventSource": "DEPLOYMENT_EVENT",
+      "exclusions": [],
+      "scope": [],
+      "severity": "MEDIUM_SEVERITY",
+      "policyVersion": "1.1",
+      "policySections": [
+        {
+          "sectionName": "Process Activity",
+          "policyGroups": [
+            {
+              "fieldName": "Unexpected Process Executed",
+              "booleanOperator": "OR",
+              "negate": false,
+              "values": [
+                {
+                  "value": "true"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mitreAttackVectors": [
+        {
+          "tactic": "TA0002",
+          "techniques": ["T1059"]
+        }
+      ],
+      "criteriaLocked": false,
+      "mitreVectorsLocked": false,
+      "isDefault": false
+    }
+EOF
+Step 3: Apply the security policies
+
+# Apply the policy configurations
+oc apply -f image-policy.yaml
+oc apply -f runtime-policy.yaml
+
+# Verify ConfigMaps were created
+oc get configmaps -n stackrox | grep policy
+Subtask 2.3: Configure Network Policies
+Step 1: Create network segmentation policy
+
+# Create network-policy.yaml
+cat << EOF > network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rhacs-network-policy
+  namespace: stackrox
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: stackrox
+    - namespaceSelector:
+        matchLabels:
+          name: openshift-monitoring
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8443
+    - protocol: TCP
+      port: 9443
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 8443
+    - protocol: UDP
+      port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF
+Step 2: Apply network policies
+
+# Apply network policies
+oc apply -f network-policy.yaml
+
+# Verify network policies
+oc get networkpolicy -n stackrox
+oc get networkpolicy -n default
+Step 3: Test network policy enforcement
+
+# Create a test pod to verify network restrictions
+oc run test-pod --image=registry.redhat.io/ubi8/ubi:latest --rm -it -- /bin/bash
+
+# From within the pod, test connectivity (should be restricted)
+# curl -k https://central.stackrox:443 (should work)
+# curl -k https://external-site.com (should be blocked)
+Task 3: Verify Vulnerability Scanning and Compliance Checks
+Subtask 3.1: Configure Vulnerability Scanning
+Step 1: Verify scanner components are running
+
+# Check scanner pods
+oc get pods -n stackrox | grep scanner
+
+# Check scanner logs
+oc logs -n stackrox deployment/scanner -c scanner
+Step 2: Create a test deployment for scanning
+
+# Create test-app.yaml
+cat << EOF > test-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulnerable-app
+  namespace: default
+  labels:
+    app: vulnerable-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vulnerable-app
+  template:
+    metadata:
+      labels:
+        app: vulnerable-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.14
+        ports:
+        - containerPort: 80
+        securityContext:
+          runAsUser: 0
+          privileged: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+EOF
+Step 3: Deploy the test application
+
+# Deploy the vulnerable application
+oc apply -f test-app.yaml
+
+# Wait for deployment to complete
+oc rollout status deployment/vulnerable-app -n default
+
+# Verify pod is running
+oc get pods -n default | grep vulnerable-app
+Step 4: Trigger vulnerability scan
+
+# Get the image details
+oc describe deployment vulnerable-app -n default | grep Image
+
+# Check RHACS Central UI for scan results
+echo "Check vulnerability scan results in RHACS Central UI:"
+echo "Navigate to: https://$CENTRAL_ROUTE"
+echo "Go to: Vulnerability Management > Images"
+Subtask 3.2: Configure Compliance Scanning
+Step 1: Create compliance scan configuration
+
+# Create compliance-scan.yaml
+cat << EOF > compliance-scan.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compliance-config
+  namespace: stackrox
+data:
+  config.yaml: |
+    standards:
+      - CIS_Kubernetes_v1_5
+      - NIST_SP_800_190
+      - PCI_DSS_3_2
+    scanSchedule: "0 2 * * *"  # Daily at 2 AM
+    clusters:
+      - $CLUSTER_NAME
+    notifications:
+      enabled: true
+      webhook: ""
+      email: ""
+EOF
+Step 2: Apply compliance configuration
+
+# Apply compliance configuration
+oc apply -f compliance-scan.yaml
+
+# Verify configuration
+oc get configmap compliance-config -n stackrox -o yaml
+Step 3: Create a compliance test deployment
+
+# Create non-compliant-app.yaml
+cat << EOF > non-compliant-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: non-compliant-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: non-compliant-app
+  template:
+    metadata:
+      labels:
+        app: non-compliant-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false
+        resources: {}
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
+EOF
+Step 4: Deploy non-compliant application
+
+# Deploy the non-compliant application
+oc apply -f non-compliant-app.yaml
+
+# Check deployment status
+oc get deployment non-compliant-app -n default
+Subtask 3.3: Generate Compliance Reports
+Step 1: Create compliance report script
+
+# Create compliance-report.sh
+cat << 'EOF' > compliance-report.sh
+#!/bin/bash
+
+ADMIN_PASSWORD=$(oc get secret central-htpasswd -n stackrox -o jsonpath='{.data.password}' | base64 -d)
+CENTRAL_ROUTE=$(oc get route central -n stackrox -o jsonpath='{.spec.host}')
+
+# Generate compliance report
+curl -k -X GET \
+  -u admin:$ADMIN_PASSWORD \
+  -H "Accept: application/json" \
+  "https://$CENTRAL_ROUTE/v1/compliance/results" \
+  -o compliance-report.json
+
+# Generate vulnerability report
+curl -k -X GET \
+  -u admin:$ADMIN_PASSWORD \
+  -H "Accept: application/json" \
+  "https://$CENTRAL_ROUTE/v1/images" \
+  -o vulnerability-report.json
+
+echo "Reports generated:"
+echo "- compliance-report.json"
+echo "- vulnerability-report.json"
+
+# Display summary
+echo "=== Compliance Summary ==="
+cat compliance-report.json | jq '.results[] | {standard: .evidence.standard, status: .evidence.state}'
+
+echo "=== Vulnerability Summary ==="
+cat vulnerability-report.json | jq '.images[] | {name: .name.fullName, cves: (.scan.components[] | length)}'
+EOF
+
+chmod +x compliance-report.sh
+Step 2: Generate reports
+
+# Run the compliance report script
+./compliance-report.sh
+
+# View compliance results
+cat compliance-report.json | jq '.'
+
+# View vulnerability results
+cat vulnerability-report.json | jq '.images[0]'
+Step 3: Verify scanning results in UI
+
+echo "Access RHACS Central UI to view detailed reports:"
+echo "URL: https://$CENTRAL_ROUTE"
+echo "Navigate to:"
+echo "1. Compliance > Dashboard"
+echo "2. Vulnerability Management > Dashboard"
+echo "3. Risk > Deployments"
+Subtask 3.4: Configure Alerting and Notifications
+Step 1: Create alert configuration
+
+# Create alert-config.yaml
+cat << EOF > alert-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-configuration
+  namespace: stackrox
+data:
+  alerts.yaml: |
+    notifications:
+      - name: "High Severity Violations"
+        type: "webhook"
+        webhook:
+          endpoint: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+        labelSelector:
+          severity: "HIGH_SEVERITY"
+      - name: "Compliance Failures"
+        type: "email"
+        email:
+          server: "smtp.company.com"
+          from: "rhacs@company.com"
+          to: ["security-team@company.com"]
+        labelSelector:
+          category: "Compliance"
+    policies:
+      - name: "Critical CVE Alert"
+        severity: "CRITICAL_SEVERITY"
+        categories: ["Vulnerability Management"]
+        enabled: true
+      - name: "Runtime Violation Alert"
+        severity: "HIGH_SEVERITY"
+        categories: ["Runtime"]
+        enabled: true
+EOF
+Step 2: Apply alert configuration
+
+# Apply alert configuration
+oc apply -f alert-config.yaml
+
+# Verify configuration
+oc get configmap alert-configuration -n stackrox
+Step 3: Test alerting with policy violation
+
+# Create a deployment that will trigger alerts
+oc run alert-test --image=nginx:1.14 --privileged=true --rm -it -- /bin/bash
+
+# This should trigger security policy violations and generate alerts
+Troubleshooting Common Issues
+Issue 1: RHACS Operator Installation Fails
+Symptoms:
+
+Operator pods in CrashLoopBackOff state
+CSV shows failed status
+Solution:
+
+# Check operator logs
+oc logs -n stackrox deployment/rhacs-operator-controller-manager
+
+# Verify sufficient resources
+oc describe nodes | grep -A 5 "Allocated resources"
+
+# Clean up and reinstall if necessary
+oc delete subscription rhacs-operator -n stackrox
+oc delete csv -n stackrox --all
+# Wait 2 minutes, then reinstall
+Issue 2: Central UI Not Accessible
+Symptoms:
+
+Route exists but UI returns 503 error
+Central pods not ready
+Solution:
+
+# Check Central pod status
+oc get pods -n stackrox | grep central
+
+# Check Central logs
+oc logs -n stackrox deployment/central
+
+# Verify route configuration
+oc get route central -n stackrox -o yaml
+
+# Check service endpoints
+oc get endpoints central -n stackrox
+Issue 3: Scanner Not Working
+Symptoms:
+
+Images not being scanned
+Scanner pods failing
+Solution:
+
+# Check scanner pod logs
+oc logs -n stackrox deployment/scanner
+
+# Verify scanner configuration
+oc get central stackrox-central-services -n stackrox -o yaml | grep -A 10 scanner
+
+# Restart scanner if needed
+oc rollout restart deployment/scanner -n stackrox
+Issue 4: Admission Controller Blocking Deployments
+Symptoms:
+
+All deployments being rejected
+Admission controller too restrictive
+Solution:
+
+# Check admission controller logs
+oc logs -n stackrox deployment/admission-control
+
+# Temporarily disable enforcement
+oc patch securedcluster stackrox-secured-cluster-services -n stackrox --type='merge' -p='{"spec":{"admissionControl":{"enforceOnCreates":false}}}'
+
+# Review and adjust policies in RHACS UI
+Verification and Testing
+Verification Checklist
+Step 1: Verify all components are running
+
+# Check all RHACS pods
+oc get pods -n stackrox
+
+# Expected pods:
+# - central-*
+# - scanner-*
+# - sensor-*
+# - admission-control-*
+# - collector-* (on each node)
+Step 2: Verify UI accessibility
+
+# Test Central UI access
+curl -k -I https://$CENTRAL_ROUTE
+
+# Should return HTTP 200 or 302
+Step 3: Verify scanning functionality
+
+# Deploy test image and verify scan
+oc run scan-test --image=nginx:1.14 --rm -it -- echo "Scan test"
+
+# Check scan results in UI or via API
+Step 4: Verify policy enforcement
+
+# Try to deploy privileged container (should be blocked)
+oc run privilege-test --image=nginx --privileged=true
+
+# Should be rejected by admission controller
+Conclusion
+In this comprehensive lab, you have successfully:
+
+• Installed RHACS on OpenShift: Deployed the complete RHACS stack including Central, Scanner, Sensor, and Admission Controller components across your OpenShift cluster.
+
+• Configured Security Policies: Implemented custom security policies for image scanning, runtime protection, and network segmentation to enforce security best practices.
+
+• Enabled Runtime Protection: Set up real-time monitoring and alerting for suspicious activities and policy violations in your containerized applications.
+
+• Implemented Vulnerability Scanning: Configured automated vulnerability scanning for container images and established compliance checking against industry standards like CIS, NIST, and PCI-DSS.
+
+• Generated Compliance Reports: Created automated reporting mechanisms to track security posture and compliance status across your multicluster environment.
+
+• Configured Alerting: Set up notification systems to alert security teams of critical vulnerabilities and policy violations in real-time.
+
+Why This Matters:
+
+RHACS provides enterprise-grade security for Kubernetes environments by offering:
+
+Proactive Security: Identifies vulnerabilities before deployment
+Runtime Protection: Monitors and protects running containers
+Compliance Automation: Ensures adherence to security standards
+Centralized Management: Single pane of glass for multicluster security
+Risk Reduction: Significantly reduces the attack surface of containerized applications
+This lab has equipped you with the practical skills needed to secure production Kubernetes environments using RHACS, making you valuable for organizations implementing container security at scale. The knowledge gained here directly applies to the Multicluster Management with Red Hat OpenShift Platform Plus certification and real-world enterprise security implementations.
+
+Next Steps:
+
+Explore advanced RHACS features like custom integrations
+Practice with different compliance frameworks
+Implement RHACS in multicluster scenarios
+Configure advanced network policies and microsegmentation

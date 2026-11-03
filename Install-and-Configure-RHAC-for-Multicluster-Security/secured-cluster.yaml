@@ -1,0 +1,32 @@
+apiVersion: platform.stackrox.io/v1alpha1
+kind: SecuredCluster
+metadata:
+  name: stackrox-secured-cluster-services
+  namespace: stackrox
+spec:
+  clusterName: primary-cluster
+  auditLogs:
+    collection: Auto
+  centralEndpoint: central.stackrox:443
+  admissionControl:
+    listenOnCreates: true
+    listenOnEvents: true
+    listenOnUpdates: true
+    enforceOnCreates: true
+    enforceOnUpdates: true
+    scanInline: true
+    disableBypass: false
+    timeoutSeconds: 20
+  perNode:
+    collector:
+      collection: EBPF
+      imageFlavor: Regular
+    taintToleration: TolerateTaints
+  sensor:
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "1000m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"

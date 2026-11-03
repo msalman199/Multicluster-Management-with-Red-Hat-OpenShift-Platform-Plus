@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-configuration
+  namespace: stackrox
+data:
+  alerts.yaml: |
+    notifications:
+      - name: "High Severity Violations"
+        type: "webhook"
+        webhook:
+          endpoint: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+        labelSelector:
+          severity: "HIGH_SEVERITY"
+      - name: "Compliance Failures"
+        type: "email"
+        email:
+          server: "smtp.company.com"
+          from: "rhacs@company.com"
+          to: ["security-team@company.com"]
+        labelSelector:
+          category: "Compliance"
+    policies:
+      - name: "Critical CVE Alert"
+        severity: "CRITICAL_SEVERITY"
+        categories: ["Vulnerability Management"]
+        enabled: true
+      - name: "Runtime Violation Alert"
+        severity: "HIGH_SEVERITY"
+        categories: ["Runtime"]
+        enabled: true

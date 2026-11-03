@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-security-policy
+  namespace: stackrox
+data:
+  policy.json: |
+    {
+      "name": "Runtime Process Monitoring",
+      "description": "Monitor and alert on suspicious runtime processes",
+      "disabled": false,
+      "categories": ["Runtime"],
+      "lifecycleStages": ["RUNTIME"],
+      "eventSource": "DEPLOYMENT_EVENT",
+      "exclusions": [],
+      "scope": [],
+      "severity": "MEDIUM_SEVERITY",
+      "policyVersion": "1.1",
+      "policySections": [
+        {
+          "sectionName": "Process Activity",
+          "policyGroups": [
+            {
+              "fieldName": "Unexpected Process Executed",
+              "booleanOperator": "OR",
+              "negate": false,
+              "values": [
+                {
+                  "value": "true"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mitreAttackVectors": [
+        {
+          "tactic": "TA0002",
+          "techniques": ["T1059"]
+        }
+      ],
+      "criteriaLocked": false,
+      "mitreVectorsLocked": false,
+      "isDefault": false
+    }

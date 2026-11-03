@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compliance-config
+  namespace: stackrox
+data:
+  config.yaml: |
+    standards:
+      - CIS_Kubernetes_v1_5
+      - NIST_SP_800_190
+      - PCI_DSS_3_2
+    scanSchedule: "0 2 * * *"  # Daily at 2 AM
+    clusters:
+      - primary-cluster
+    notifications:
+      enabled: true
+      webhook: ""
+      email: ""
