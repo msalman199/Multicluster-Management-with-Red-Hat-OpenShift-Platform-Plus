@@ -1,0 +1,47 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: rbac-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: rbac-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: Role
+            metadata:
+              name: demo-app-manager
+              namespace: demo-app
+            rules:
+            - apiGroups: [""]
+              resources: ["pods", "services"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              verbs: ["get", "list", "watch", "update", "patch"]
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: RoleBinding
+            metadata:
+              name: demo-app-manager-binding
+              namespace: demo-app
+            subjects:
+            - kind: User
+              name: demo-user
+              apiGroup: rbac.authorization.k8s.io
+            roleRef:
+              kind: Role
+              name: demo-app-manager
+              apiGroup: rbac.authorization.k8s.io

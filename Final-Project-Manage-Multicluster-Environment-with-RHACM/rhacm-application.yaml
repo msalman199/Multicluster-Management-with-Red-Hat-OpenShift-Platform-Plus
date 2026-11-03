@@ -1,0 +1,39 @@
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: demo-multicluster-app
+  namespace: multicluster-apps
+spec:
+  componentKinds:
+  - group: apps.open-cluster-management.io
+    kind: Subscription
+  descriptor: {}
+  selector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - demo-multicluster-app
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Channel
+metadata:
+  name: demo-app-channel
+  namespace: multicluster-apps
+spec:
+  type: Namespace
+  pathname: multicluster-apps
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Subscription
+metadata:
+  name: demo-app-subscription
+  namespace: multicluster-apps
+  labels:
+    app: demo-multicluster-app
+spec:
+  channel: multicluster-apps/demo-app-channel
+  placement:
+    placementRef:
+      name: demo-app-placement
+      kind: PlacementRule

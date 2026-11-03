@@ -1,0 +1,898 @@
+Lab 20: Final Project: Manage Multicluster Environment with RHACM
+Objectives
+By the end of this lab, students will be able to:
+
+Set up and configure Red Hat Advanced Cluster Management (RHACM) for multicluster management
+Deploy and manage applications across multiple OpenShift clusters
+Implement comprehensive security policies across clusters
+Configure observability and monitoring for multicluster environments
+Troubleshoot common multicluster management issues
+Apply best practices for enterprise-scale multicluster operations
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes and OpenShift concepts
+Familiarity with YAML configuration files
+Experience with command-line interface operations
+Knowledge of container orchestration principles
+Understanding of networking concepts in containerized environments
+Completion of previous RHACM labs or equivalent experience
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to begin - no need to build your own virtual machines or install software.
+
+Your lab environment includes:
+
+Hub cluster with RHACM pre-installed
+Two managed clusters (cluster-east and cluster-west)
+Pre-configured networking between clusters
+Command-line tools (oc, kubectl, helm)
+Access to OpenShift web console
+Task 1: Set Up RHACM for Multicluster Management
+Subtask 1.1: Verify RHACM Installation and Access
+First, let's verify that RHACM is properly installed and accessible on your hub cluster.
+
+Access the hub cluster:
+# Switch to the hub cluster context
+oc config use-context hub-cluster
+
+# Verify cluster connection
+oc whoami --show-server
+Check RHACM installation status:
+# Verify RHACM operator installation
+oc get operators -A | grep advanced-cluster-management
+
+# Check RHACM pods status
+oc get pods -n open-cluster-management
+Access RHACM web console:
+# Get RHACM console URL
+oc get route multicloud-console -n open-cluster-management -o jsonpath='{.spec.host}'
+
+# Get admin credentials
+oc whoami -t
+Subtask 1.2: Configure Hub Cluster Settings
+Configure the hub cluster with optimal settings for multicluster management.
+
+Create namespace for multicluster resources:
+# Create dedicated namespace
+oc create namespace multicluster-demo
+
+# Set as default namespace
+oc config set-context --current --namespace=multicluster-demo
+Configure cluster resource quotas:
+# Create file: cluster-resource-quota.yaml
+cat << EOF > cluster-resource-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: multicluster-quota
+  namespace: multicluster-demo
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20"
+    limits.memory: 40Gi
+    persistentvolumeclaims: "10"
+EOF
+
+# Apply the quota
+oc apply -f cluster-resource-quota.yaml
+Verify hub cluster readiness:
+# Check cluster status
+oc get managedclusters
+
+# Verify RHACM components
+oc get pods -n open-cluster-management-hub
+Subtask 1.3: Import and Configure Managed Clusters
+Import the two managed clusters into RHACM for centralized management.
+
+Import cluster-east:
+# Create managed cluster resource
+cat << EOF > managed-cluster-east.yaml
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: cluster-east
+  labels:
+    environment: production
+    region: east
+    vendor: OpenShift
+spec:
+  hubAcceptsClient: true
+EOF
+
+# Apply the managed cluster
+oc apply -f managed-cluster-east.yaml
+Generate import command for cluster-east:
+# Get the import command
+oc get secret cluster-east-import -n cluster-east -o jsonpath='{.data.import\.yaml}' | base64 --decode > cluster-east-import.yaml
+
+# Display the import command
+echo "Run this command on cluster-east:"
+echo "oc apply -f cluster-east-import.yaml"
+Import cluster-west:
+# Create managed cluster resource
+cat << EOF > managed-cluster-west.yaml
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: cluster-west
+  labels:
+    environment: staging
+    region: west
+    vendor: OpenShift
+spec:
+  hubAcceptsClient: true
+EOF
+
+# Apply the managed cluster
+oc apply -f managed-cluster-west.yaml
+Verify cluster import status:
+# Check managed clusters status
+oc get managedclusters
+
+# Verify cluster agents
+oc get pods -n open-cluster-management-agent
+Task 2: Deploy Applications Across Clusters
+Subtask 2.1: Create Application Namespace and Resources
+Set up the foundation for multicluster application deployment.
+
+Create application namespace:
+# Create namespace on hub cluster
+oc create namespace multicluster-apps
+
+# Create namespace on managed clusters
+oc create namespace demo-app --context=cluster-east
+oc create namespace demo-app --context=cluster-west
+Create placement rules:
+# Create file: placement-rule.yaml
+cat << EOF > placement-rule.yaml
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: demo-app-placement
+  namespace: multicluster-apps
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: production
+  clusterReplicas: 1
+EOF
+
+# Apply placement rule
+oc apply -f placement-rule.yaml
+Verify placement:
+# Check placement decisions
+oc get placementrule demo-app-placement -n multicluster-apps -o yaml
+Subtask 2.2: Deploy Sample Web Application
+Deploy a sample web application across multiple clusters using RHACM.
+
+Create application deployment:
+# Create file: demo-app-deployment.yaml
+cat << EOF > demo-app-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-web-app
+  namespace: demo-app
+  labels:
+    app: demo-web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-web-app
+  template:
+    metadata:
+      labels:
+        app: demo-web-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-web-app-service
+  namespace: demo-app
+spec:
+  selector:
+    app: demo-web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+EOF
+
+# Apply deployment
+oc apply -f demo-app-deployment.yaml
+Create RHACM Application:
+# Create file: rhacm-application.yaml
+cat << EOF > rhacm-application.yaml
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: demo-multicluster-app
+  namespace: multicluster-apps
+spec:
+  componentKinds:
+  - group: apps.open-cluster-management.io
+    kind: Subscription
+  descriptor: {}
+  selector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - demo-multicluster-app
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Channel
+metadata:
+  name: demo-app-channel
+  namespace: multicluster-apps
+spec:
+  type: Namespace
+  pathname: multicluster-apps
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: Subscription
+metadata:
+  name: demo-app-subscription
+  namespace: multicluster-apps
+  labels:
+    app: demo-multicluster-app
+spec:
+  channel: multicluster-apps/demo-app-channel
+  placement:
+    placementRef:
+      name: demo-app-placement
+      kind: PlacementRule
+EOF
+
+# Apply RHACM application
+oc apply -f rhacm-application.yaml
+Verify application deployment:
+# Check application status
+oc get applications -n multicluster-apps
+
+# Check subscription status
+oc get subscriptions -n multicluster-apps
+
+# Verify deployment on managed clusters
+oc get deployments -n demo-app --context=cluster-east
+oc get deployments -n demo-app --context=cluster-west
+Subtask 2.3: Configure Application Load Balancing
+Set up load balancing and routing for the multicluster application.
+
+Create route on managed clusters:
+# Create file: app-route.yaml
+cat << EOF > app-route.yaml
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: demo-app-route
+  namespace: demo-app
+spec:
+  to:
+    kind: Service
+    name: demo-web-app-service
+  port:
+    targetPort: 80
+EOF
+
+# Apply route to both clusters
+oc apply -f app-route.yaml --context=cluster-east
+oc apply -f app-route.yaml --context=cluster-west
+Test application accessibility:
+# Get route URLs
+echo "Cluster East URL:"
+oc get route demo-app-route -n demo-app --context=cluster-east -o jsonpath='{.spec.host}'
+
+echo "Cluster West URL:"
+oc get route demo-app-route -n demo-app --context=cluster-west -o jsonpath='{.spec.host}'
+
+# Test connectivity
+curl -I http://$(oc get route demo-app-route -n demo-app --context=cluster-east -o jsonpath='{.spec.host}')
+Task 3: Implement Security Policies
+Subtask 3.1: Create Network Security Policies
+Implement network security policies to control traffic between applications and clusters.
+
+Create network policy for application isolation:
+# Create file: network-policy.yaml
+cat << EOF > network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-app-network-policy
+  namespace: demo-app
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-web-app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: openshift-ingress
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+EOF
+
+# Apply network policy
+oc apply -f network-policy.yaml --context=cluster-east
+oc apply -f network-policy.yaml --context=cluster-west
+Create RHACM Policy for network security:
+# Create file: rhacm-network-policy.yaml
+cat << EOF > rhacm-network-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: network-security-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: network-policy-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: default-deny-all
+              namespace: demo-app
+            spec:
+              podSelector: {}
+              policyTypes:
+              - Ingress
+              - Egress
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: network-security-binding
+  namespace: multicluster-apps
+placementRef:
+  name: demo-app-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+- name: network-security-policy
+  kind: Policy
+  apiGroup: policy.open-cluster-management.io
+EOF
+
+# Apply RHACM network policy
+oc apply -f rhacm-network-policy.yaml
+Subtask 3.2: Implement Pod Security Standards
+Configure pod security standards across all managed clusters.
+
+Create pod security policy:
+# Create file: pod-security-policy.yaml
+cat << EOF > pod-security-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: pod-security-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: pod-security-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: demo-app
+              labels:
+                pod-security.kubernetes.io/enforce: restricted
+                pod-security.kubernetes.io/audit: restricted
+                pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: pod-security-binding
+  namespace: multicluster-apps
+placementRef:
+  name: demo-app-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+- name: pod-security-policy
+  kind: Policy
+  apiGroup: policy.open-cluster-management.io
+EOF
+
+# Apply pod security policy
+oc apply -f pod-security-policy.yaml
+Create security context constraints policy:
+# Create file: scc-policy.yaml
+cat << EOF > scc-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: security-context-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: scc-config
+      spec:
+        remediationAction: inform
+        severity: medium
+        object-templates:
+        - complianceType: mustnothave
+          objectDefinition:
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              namespace: demo-app
+            spec:
+              securityContext:
+                runAsUser: 0
+EOF
+
+# Apply SCC policy
+oc apply -f scc-policy.yaml
+Subtask 3.3: Configure RBAC Policies
+Implement Role-Based Access Control policies across clusters.
+
+Create RBAC policy for application management:
+# Create file: rbac-policy.yaml
+cat << EOF > rbac-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: rbac-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: rbac-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: Role
+            metadata:
+              name: demo-app-manager
+              namespace: demo-app
+            rules:
+            - apiGroups: [""]
+              resources: ["pods", "services"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              verbs: ["get", "list", "watch", "update", "patch"]
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: RoleBinding
+            metadata:
+              name: demo-app-manager-binding
+              namespace: demo-app
+            subjects:
+            - kind: User
+              name: demo-user
+              apiGroup: rbac.authorization.k8s.io
+            roleRef:
+              kind: Role
+              name: demo-app-manager
+              apiGroup: rbac.authorization.k8s.io
+EOF
+
+# Apply RBAC policy
+oc apply -f rbac-policy.yaml
+Verify policy compliance:
+# Check policy status
+oc get policies -n multicluster-apps
+
+# Check policy compliance details
+oc describe policy network-security-policy -n multicluster-apps
+oc describe policy pod-security-policy -n multicluster-apps
+oc describe policy rbac-policy -n multicluster-apps
+Task 4: Configure Observability and Monitoring
+Subtask 4.1: Enable Multicluster Observability
+Set up comprehensive observability across all managed clusters.
+
+Create observability configuration:
+# Create file: observability-config.yaml
+cat << EOF > observability-config.yaml
+apiVersion: observability.open-cluster-management.io/v1beta2
+kind: MultiClusterObservability
+metadata:
+  name: observability
+spec:
+  observabilityAddonSpec:
+    enableMetrics: true
+    interval: 30
+  storageConfig:
+    metricObjectStorage:
+      name: thanos-object-storage
+      key: thanos.yaml
+    storageClass: gp2
+    alertmanagerStorageSize: 1Gi
+    compactStorageSize: 10Gi
+    ruleStorageSize: 1Gi
+    receiveStorageSize: 10Gi
+    storeStorageSize: 10Gi
+EOF
+
+# Apply observability configuration
+oc apply -f observability-config.yaml
+Create storage secret for observability:
+# Create file: thanos-storage-secret.yaml
+cat << EOF > thanos-storage-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: thanos-object-storage
+  namespace: open-cluster-management-observability
+type: Opaque
+stringData:
+  thanos.yaml: |
+    type: s3
+    config:
+      bucket: "multicluster-observability"
+      endpoint: "minio.minio.svc.cluster.local:9000"
+      insecure: true
+      access_key: "minio"
+      secret_key: "minio123"
+EOF
+
+# Apply storage secret
+oc apply -f thanos-storage-secret.yaml
+Verify observability installation:
+# Check observability pods
+oc get pods -n open-cluster-management-observability
+
+# Check observability status
+oc get multiclusterobservability observability -o yaml
+Subtask 4.2: Configure Custom Metrics and Alerts
+Set up custom metrics collection and alerting rules.
+
+Create custom metrics configuration:
+# Create file: custom-metrics.yaml
+cat << EOF > custom-metrics.yaml
+apiVersion: observability.open-cluster-management.io/v1beta1
+kind: ObservabilityAddon
+metadata:
+  name: observability-addon
+  namespace: open-cluster-management-addon-observability
+spec:
+  enableMetrics: true
+  interval: 30
+  resources:
+    limits:
+      memory: 1000Mi
+    requests:
+      memory: 200Mi
+EOF
+
+# Apply custom metrics configuration
+oc apply -f custom-metrics.yaml
+Create alerting rules:
+# Create file: alerting-rules.yaml
+cat << EOF > alerting-rules.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-alerting-rules
+  namespace: open-cluster-management-observability
+data:
+  custom_rules.yaml: |
+    groups:
+    - name: multicluster.rules
+      rules:
+      - alert: ClusterDown
+        expr: up{job="cluster-version"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster {{ \$labels.cluster }} is down"
+          description: "Cluster {{ \$labels.cluster }} has been down for more than 5 minutes."
+      
+      - alert: HighPodCPUUsage
+        expr: (sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (cluster, namespace, pod) / sum(container_spec_cpu_quota{container!="POD",container!=""}/container_spec_cpu_period{container!="POD",container!=""}) by (cluster, namespace, pod)) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "Pod {{ \$labels.pod }} in namespace {{ \$labels.namespace }} on cluster {{ \$labels.cluster }} has high CPU usage."
+EOF
+
+# Apply alerting rules
+oc apply -f alerting-rules.yaml
+Configure Grafana dashboards:
+# Access Grafana console
+oc get route grafana -n open-cluster-management-observability -o jsonpath='{.spec.host}'
+
+# Get Grafana admin password
+oc get secret grafana-admin-credentials -n open-cluster-management-observability -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 --decode
+Subtask 4.3: Set Up Log Aggregation
+Configure centralized logging for multicluster environment.
+
+Create logging configuration:
+# Create file: logging-config.yaml
+cat << EOF > logging-config.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: logging-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: logging-config
+      spec:
+        remediationAction: enforce
+        severity: medium
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: fluent-bit-config
+              namespace: demo-app
+            data:
+              fluent-bit.conf: |
+                [SERVICE]
+                    Flush         1
+                    Log_Level     info
+                    Daemon        off
+                    Parsers_File  parsers.conf
+                
+                [INPUT]
+                    Name              tail
+                    Path              /var/log/containers/*demo-web-app*.log
+                    Parser            docker
+                    Tag               app.logs
+                    Refresh_Interval  5
+                
+                [OUTPUT]
+                    Name  stdout
+                    Match *
+EOF
+
+# Apply logging configuration
+oc apply -f logging-config.yaml
+Verify logging setup:
+# Check logging policy status
+oc get policy logging-policy -n multicluster-apps
+
+# Verify log collection
+oc logs -l app=demo-web-app -n demo-app --context=cluster-east --tail=10
+oc logs -l app=demo-web-app -n demo-app --context=cluster-west --tail=10
+Task 5: Troubleshooting and Validation
+Subtask 5.1: Validate Cluster Health
+Perform comprehensive health checks across all clusters.
+
+Check cluster connectivity:
+# Verify all managed clusters are available
+oc get managedclusters
+
+# Check cluster conditions
+oc get managedclusters -o custom-columns=NAME:.metadata.name,AVAILABLE:.status.conditions[?(@.type==\"ManagedClusterConditionAvailable\")].status,JOINED:.status.conditions[?(@.type==\"ManagedClusterJoined\")].status
+Validate application deployment:
+# Check application status across clusters
+oc get applications -n multicluster-apps
+
+# Verify pod status on managed clusters
+oc get pods -n demo-app --context=cluster-east
+oc get pods -n demo-app --context=cluster-west
+
+# Check service endpoints
+oc get endpoints -n demo-app --context=cluster-east
+oc get endpoints -n demo-app --context=cluster-west
+Test application functionality:
+# Test application response from both clusters
+EAST_URL=$(oc get route demo-app-route -n demo-app --context=cluster-east -o jsonpath='{.spec.host}')
+WEST_URL=$(oc get route demo-app-route -n demo-app --context=cluster-west -o jsonpath='{.spec.host}')
+
+echo "Testing East cluster:"
+curl -s -o /dev/null -w "%{http_code}" http://$EAST_URL
+
+echo "Testing West cluster:"
+curl -s -o /dev/null -w "%{http_code}" http://$WEST_URL
+Subtask 5.2: Verify Policy Compliance
+Check that all security policies are properly enforced.
+
+Check policy compliance status:
+# Get overall policy compliance
+oc get policies -n multicluster-apps
+
+# Check detailed compliance for each policy
+oc describe policy network-security-policy -n multicluster-apps
+oc describe policy pod-security-policy -n multicluster-apps
+oc describe policy rbac-policy -n multicluster-apps
+Validate network policies:
+# Check network policies on managed clusters
+oc get networkpolicies -n demo-app --context=cluster-east
+oc get networkpolicies -n demo-app --context=cluster-west
+
+# Test network policy enforcement
+oc run test-pod --image=busybox --rm -it --restart=Never --context=cluster-east -- wget -qO- --timeout=2 http://demo-web-app-service.demo-app.svc.cluster.local
+Verify RBAC implementation:
+# Check roles and role bindings
+oc get roles,rolebindings -n demo-app --context=cluster-east
+oc get roles,rolebindings -n demo-app --context=cluster-west
+Subtask 5.3: Monitor Observability Metrics
+Validate that monitoring and observability are working correctly.
+
+Check observability components:
+# Verify observability pods are running
+oc get pods -n open-cluster-management-observability
+
+# Check metrics collection
+oc get observabilityaddon -A
+Access monitoring dashboards:
+# Get Grafana URL
+GRAFANA_URL=$(oc get route grafana -n open-cluster-management-observability -o jsonpath='{.spec.host}')
+echo "Grafana URL: https://$GRAFANA_URL"
+
+# Get admin credentials
+GRAFANA_PASSWORD=$(oc get secret grafana-admin-credentials -n open-cluster-management-observability -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 --decode)
+echo "Admin password: $GRAFANA_PASSWORD"
+Validate alerting:
+# Check alertmanager status
+oc get pods -l app=alertmanager -n open-cluster-management-observability
+
+# View current alerts
+oc logs -l app=alertmanager -n open-cluster-management-observability --tail=20
+Common Troubleshooting Tips
+Issue: Managed Cluster Import Fails
+Symptoms: Cluster shows as "Unknown" or "Offline" status
+
+Solution:
+
+# Check import secret
+oc get secret -n <cluster-name> | grep import
+
+# Regenerate import command
+oc get secret <cluster-name>-import -n <cluster-name> -o jsonpath='{.data.import\.yaml}' | base64 --decode > new-import.yaml
+
+# Apply on managed cluster
+oc apply -f new-import.yaml --context=<managed-cluster>
+Issue: Application Not Deploying to Managed Clusters
+Symptoms: Application shows as deployed but pods not running on managed clusters
+
+Solution:
+
+# Check placement rule
+oc get placementrule -n multicluster-apps -o yaml
+
+# Verify cluster labels match placement selector
+oc get managedclusters --show-labels
+
+# Check subscription status
+oc describe subscription -n multicluster-apps
+Issue: Policy Not Compliant
+Symptoms: Policies showing as "NonCompliant" status
+
+Solution:
+
+# Check policy details
+oc describe policy <policy-name> -n multicluster-apps
+
+# Verify placement binding
+oc get placementbinding -n multicluster-apps
+
+# Check managed cluster agent logs
+oc logs -n open-cluster-management-agent-addon -l app=config-policy-controller
+Issue: Observability Metrics Missing
+Symptoms: No metrics showing in Grafana dashboards
+
+Solution:
+
+# Check observability addon status
+oc get observabilityaddon -A
+
+# Verify metrics collector pods
+oc get pods -n open-cluster-management-addon-observability
+
+# Check thanos components
+oc get pods -n open-cluster-management-observability | grep thanos
+Performance Optimization Tips
+Resource Management:
+
+Set appropriate resource limits for all components
+Use horizontal pod autoscaling for applications
+Monitor cluster resource utilization
+Network Optimization:
+
+Configure network policies to minimize unnecessary traffic
+Use service mesh for advanced traffic management
+Implement proper load balancing strategies
+Storage Optimization:
+
+Use appropriate storage classes for different workloads
+Configure retention policies for metrics and logs
+Implement backup strategies for persistent data
+Conclusion
+Congratulations! You have successfully completed the final project for managing a multicluster environment with Red Hat Advanced Cluster Management (RHACM). Throughout this comprehensive lab, you have accomplished the following key objectives:
+
+What You Accomplished
+Multicluster Setup: You configured RHACM as a hub cluster and successfully imported two managed clusters (cluster-east and cluster-west), creating a fully functional multicluster environment.
+
+Application Deployment: You deployed a sample web application across multiple clusters using RHACM's application lifecycle management capabilities, including placement rules and subscriptions.
+
+Security Implementation: You implemented comprehensive security policies including network policies, pod security standards, and RBAC controls that are enforced consistently across all managed clusters.
+
+Observability Configuration: You set up multicluster observability with metrics collection, custom alerting rules, and centralized monitoring through Grafana dashboards.
+
+Troubleshooting Skills: You learned to identify and resolve common issues in multicluster environments, including cluster connectivity problems, application deployment failures, and policy compliance issues.
+
+Why This Matters
+This lab simulates real-world enterprise scenarios where organizations need to:
+
+Manage Multiple Environments: Production, staging, and development clusters across different regions or cloud providers
+Ensure Consistent Security: Apply uniform security policies across all clusters while maintaining compliance
+Monitor at Scale: Gain visibility into application performance and cluster health across the entire infrastructure
+**Automate Operations

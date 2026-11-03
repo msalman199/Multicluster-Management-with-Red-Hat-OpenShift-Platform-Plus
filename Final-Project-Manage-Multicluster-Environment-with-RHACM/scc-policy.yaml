@@ -1,0 +1,27 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: security-context-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: scc-config
+      spec:
+        remediationAction: inform
+        severity: medium
+        object-templates:
+        - complianceType: mustnothave
+          objectDefinition:
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              namespace: demo-app
+            spec:
+              securityContext:
+                runAsUser: 0

@@ -1,0 +1,44 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: network-security-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: network-policy-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: default-deny-all
+              namespace: demo-app
+            spec:
+              podSelector: {}
+              policyTypes:
+              - Ingress
+              - Egress
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: network-security-binding
+  namespace: multicluster-apps
+placementRef:
+  name: demo-app-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+- name: network-security-policy
+  kind: Policy
+  apiGroup: policy.open-cluster-management.io

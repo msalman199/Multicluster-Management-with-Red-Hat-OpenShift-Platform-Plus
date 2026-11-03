@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-alerting-rules
+  namespace: open-cluster-management-observability
+data:
+  custom_rules.yaml: |
+    groups:
+    - name: multicluster.rules
+      rules:
+      - alert: ClusterDown
+        expr: up{job="cluster-version"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster {{ $labels.cluster }} is down"
+          description: "Cluster {{ $labels.cluster }} has been down for more than 5 minutes."
+      
+      - alert: HighPodCPUUsage
+        expr: (sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (cluster, namespace, pod) / sum(container_spec_cpu_quota{container!="POD",container!=""}/container_spec_cpu_period{container!="POD",container!=""}) by (cluster, namespace, pod)) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} on cluster {{ $labels.cluster }} has high CPU usage."

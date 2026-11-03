@@ -1,0 +1,43 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: logging-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: logging-config
+      spec:
+        remediationAction: enforce
+        severity: medium
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: fluent-bit-config
+              namespace: demo-app
+            data:
+              fluent-bit.conf: |
+                [SERVICE]
+                    Flush         1
+                    Log_Level     info
+                    Daemon        off
+                    Parsers_File  parsers.conf
+                
+                [INPUT]
+                    Name              tail
+                    Path              /var/log/containers/*demo-web-app*.log
+                    Parser            docker
+                    Tag               app.logs
+                    Refresh_Interval  5
+                
+                [OUTPUT]
+                    Name  stdout
+                    Match *

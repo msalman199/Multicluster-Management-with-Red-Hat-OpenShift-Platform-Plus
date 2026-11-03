@@ -1,0 +1,42 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: pod-security-policy
+  namespace: multicluster-apps
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: pod-security-config
+      spec:
+        remediationAction: enforce
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: demo-app
+              labels:
+                pod-security.kubernetes.io/enforce: restricted
+                pod-security.kubernetes.io/audit: restricted
+                pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: pod-security-binding
+  namespace: multicluster-apps
+placementRef:
+  name: demo-app-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+- name: pod-security-policy
+  kind: Policy
+  apiGroup: policy.open-cluster-management.io

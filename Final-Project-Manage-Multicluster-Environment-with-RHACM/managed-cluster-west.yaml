@@ -1,0 +1,10 @@
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: cluster-west
+  labels:
+    environment: staging
+    region: west
+    vendor: OpenShift
+spec:
+  hubAcceptsClient: true
