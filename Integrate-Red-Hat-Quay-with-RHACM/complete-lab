@@ -1,0 +1,636 @@
+Lab 9: Integrate Red Hat Quay with RHACM
+Objectives
+By the end of this lab, students will be able to:
+
+Integrate Red Hat Quay with OpenShift clusters for centralized container image management
+Configure RHACM to manage container images across multiple clusters
+Implement image source control and access policies across distributed environments
+Establish secure image distribution workflows using Quay and RHACM
+Monitor and manage container image lifecycle across cluster environments
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of OpenShift Container Platform concepts
+Familiarity with container images and registries
+Knowledge of Kubernetes fundamentals
+Experience with YAML configuration files
+Understanding of Red Hat Advanced Cluster Management (RHACM) basics
+Basic command-line interface (CLI) skills
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to begin - no need to build your own virtual machine or install software.
+
+Your lab environment includes:
+
+OpenShift clusters with RHACM installed
+Red Hat Quay registry instance
+Pre-configured networking and authentication
+Command-line tools (oc, kubectl, helm)
+Task 1: Link Quay to OpenShift Clusters
+Subtask 1.1: Verify Lab Environment Setup
+First, let's verify that our lab environment is properly configured and accessible.
+
+Access the lab machine terminal
+
+Verify OpenShift cluster connectivity:
+
+# Check cluster status
+oc cluster-info
+
+# Verify RHACM installation
+oc get pods -n open-cluster-management
+Check Quay registry accessibility:
+# Test Quay registry connection
+curl -k https://quay-registry.apps.cluster.local/health/instance
+Subtask 1.2: Configure Quay Integration with OpenShift
+Now we'll establish the connection between Quay and our OpenShift clusters.
+
+Create Quay configuration namespace:
+# Create dedicated namespace for Quay integration
+oc create namespace quay-integration
+
+# Set current context to the new namespace
+oc project quay-integration
+Create Quay registry secret:
+# Create registry authentication secret
+oc create secret docker-registry quay-registry-secret \
+  --docker-server=quay-registry.apps.cluster.local \
+  --docker-username=admin \
+  --docker-password=password123 \
+  --docker-email=admin@example.com \
+  -n quay-integration
+Configure image pull secrets globally:
+# Link secret to default service account
+oc secrets link default quay-registry-secret --for=pull -n quay-integration
+
+# Create cluster-wide image pull secret
+oc create secret docker-registry quay-global-secret \
+  --docker-server=quay-registry.apps.cluster.local \
+  --docker-username=admin \
+  --docker-password=password123 \
+  --docker-email=admin@example.com \
+  -n openshift-config
+Subtask 1.3: Create Quay Integration Configuration
+Create Quay operator configuration:
+cat << 'EOF' > quay-integration-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quay-integration-config
+  namespace: quay-integration
+data:
+  config.yaml: |
+    AUTHENTICATION_TYPE: Database
+    BUILDLOGS_REDIS:
+      host: quay-redis
+      port: 6379
+    DATABASE_SECRET_KEY: a-random-secret-key
+    DB_URI: postgresql://quay:password@quay-database:5432/quay
+    DISTRIBUTED_STORAGE_CONFIG:
+      default:
+        - LocalStorage
+        - storage_path: /datastorage/registry
+    DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS: []
+    DISTRIBUTED_STORAGE_PREFERENCE:
+      - default
+    FEATURE_GENERAL_OCI_SUPPORT: true
+    FEATURE_LISTEN_IP_VERSION: IPv4
+    FEATURE_LOG_EXPORT: true
+    FEATURE_QUOTA_MANAGEMENT: true
+    FEATURE_RATE_LIMITS: true
+    FEATURE_REPO_MIRROR: true
+    FEATURE_SECURITY_NOTIFICATIONS: true
+    FEATURE_SECURITY_SCANNER: true
+    FEATURE_STORAGE_REPLICATION: false
+    FEATURE_USER_CREATION: true
+    FEATURE_USERNAME_CONFIRMATION: true
+    LOGS_MODEL: database
+    LOGS_MODEL_CONFIG: {}
+    PREFERRED_URL_SCHEME: https
+    SECRET_KEY: a-random-secret-key
+    SECURITY_SCANNER_INDEXING_INTERVAL: 30
+    SERVER_HOSTNAME: quay-registry.apps.cluster.local
+    SETUP_COMPLETE: true
+    TAG_EXPIRATION_OPTIONS:
+      - 0s
+      - 1d
+      - 1w
+      - 2w
+      - 4w
+    TEAM_RESYNC_STALE_TIME: 60m
+    TESTING: false
+    USE_CDN: false
+EOF
+
+oc apply -f quay-integration-config.yaml
+Verify configuration deployment:
+# Check ConfigMap creation
+oc get configmap quay-integration-config -n quay-integration
+
+# Verify configuration content
+oc describe configmap quay-integration-config -n quay-integration
+Task 2: Manage Container Images Through RHACM
+Subtask 2.1: Configure RHACM for Image Management
+Create RHACM image management namespace:
+# Create namespace for RHACM image policies
+oc create namespace rhacm-image-management
+
+# Switch to the new namespace
+oc project rhacm-image-management
+Create image policy configuration:
+cat << 'EOF' > image-policy-config.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: quay-image-policy
+  namespace: rhacm-image-management
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.DS Data Security
+    policy.open-cluster-management.io/controls: PR.DS-6 Integrity Checking
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: quay-image-policy-config
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: quay-registry-secret
+                  namespace: '{{ fromClusterClaim "name" }}'
+                type: kubernetes.io/dockerconfigjson
+                data:
+                  .dockerconfigjson: eyJhdXRocyI6eyJxdWF5LXJlZ2lzdHJ5LmFwcHMuY2x1c3Rlci5sb2NhbCI6eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJwYXNzd29yZDEyMyIsImVtYWlsIjoiYWRtaW5AZXhhbXBsZS5jb20iLCJhdXRoIjoiWVdSdGFXNDZjR0Z6YzNkdmNtUXhNak09In19fQ==
+EOF
+
+oc apply -f image-policy-config.yaml
+Subtask 2.2: Create Application Image Management Policies
+Define image source policies:
+cat << 'EOF' > image-source-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: image-source-control-policy
+  namespace: rhacm-image-management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: allowed-registries-policy
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: config.openshift.io/v1
+                kind: Image
+                metadata:
+                  name: cluster
+                spec:
+                  allowedRegistriesForImport:
+                    - domainName: quay-registry.apps.cluster.local
+                      insecure: false
+                    - domainName: registry.redhat.io
+                      insecure: false
+                    - domainName: quay.io
+                      insecure: false
+                  registrySources:
+                    allowedRegistries:
+                      - quay-registry.apps.cluster.local
+                      - registry.redhat.io
+                      - quay.io
+                      - registry.access.redhat.com
+EOF
+
+oc apply -f image-source-policy.yaml
+Create image scanning policy:
+cat << 'EOF' > image-scanning-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: image-scanning-policy
+  namespace: rhacm-image-management
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: image-vulnerability-policy
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: image-scanning-config
+                  namespace: '{{ fromClusterClaim "name" }}'
+                data:
+                  scanning-enabled: "true"
+                  max-severity: "medium"
+                  scan-on-push: "true"
+EOF
+
+oc apply -f image-scanning-policy.yaml
+Subtask 2.3: Deploy Sample Application with Quay Integration
+Create sample application using Quay images:
+cat << 'EOF' > sample-app-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quay-sample-app
+  namespace: quay-integration
+  labels:
+    app: quay-sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quay-sample-app
+  template:
+    metadata:
+      labels:
+        app: quay-sample-app
+    spec:
+      imagePullSecrets:
+        - name: quay-registry-secret
+      containers:
+        - name: sample-app
+          image: quay-registry.apps.cluster.local/admin/sample-nginx:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quay-sample-app-service
+  namespace: quay-integration
+spec:
+  selector:
+    app: quay-sample-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+EOF
+
+oc apply -f sample-app-deployment.yaml
+Verify application deployment:
+# Check deployment status
+oc get deployments -n quay-integration
+
+# Check pod status
+oc get pods -n quay-integration
+
+# Check service creation
+oc get services -n quay-integration
+Task 3: Ensure Image Source Control and Access Across Clusters
+Subtask 3.1: Configure Multi-Cluster Image Policies
+Create placement rule for multi-cluster deployment:
+cat << 'EOF' > multi-cluster-placement.yaml
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: quay-policy-placement
+  namespace: rhacm-image-management
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - dev
+          - staging
+          - production
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: quay-policy-binding
+  namespace: rhacm-image-management
+placementRef:
+  name: quay-policy-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: quay-image-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+  - name: image-source-control-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+  - name: image-scanning-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+EOF
+
+oc apply -f multi-cluster-placement.yaml
+Subtask 3.2: Implement Image Access Control
+Create role-based access control for Quay:
+cat << 'EOF' > quay-rbac-config.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: quay-image-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["images"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: quay-image-manager-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: quay-image-manager
+subjects:
+  - kind: ServiceAccount
+    name: quay-service-account
+    namespace: quay-integration
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-service-account
+  namespace: quay-integration
+EOF
+
+oc apply -f quay-rbac-config.yaml
+Create image pull policy enforcement:
+cat << 'EOF' > image-pull-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: image-pull-policy-enforcement
+  namespace: rhacm-image-management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: enforce-image-pull-policy
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: LimitRange
+                metadata:
+                  name: image-pull-policy-limits
+                  namespace: '{{ fromClusterClaim "name" }}'
+                spec:
+                  limits:
+                    - default:
+                        imagePullPolicy: Always
+                      defaultRequest:
+                        imagePullPolicy: Always
+                      type: Container
+EOF
+
+oc apply -f image-pull-policy.yaml
+Subtask 3.3: Monitor and Validate Image Compliance
+Create monitoring dashboard configuration:
+cat << 'EOF' > image-monitoring-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quay-monitoring-config
+  namespace: rhacm-image-management
+data:
+  monitoring.yaml: |
+    monitoring:
+      enabled: true
+      metrics:
+        - image_pull_count
+        - image_scan_results
+        - policy_violations
+        - registry_availability
+      alerts:
+        - name: unauthorized_image_pull
+          condition: image_source != "quay-registry.apps.cluster.local"
+          severity: high
+        - name: vulnerability_detected
+          condition: scan_result.severity >= "medium"
+          severity: medium
+        - name: registry_unavailable
+          condition: registry_health != "healthy"
+          severity: critical
+EOF
+
+oc apply -f image-monitoring-config.yaml
+Verify policy compliance across clusters:
+# Check policy status
+oc get policies -n rhacm-image-management
+
+# View policy compliance details
+oc describe policy quay-image-policy -n rhacm-image-management
+
+# Check placement binding status
+oc get placementbinding -n rhacm-image-management
+
+# Verify cluster compliance
+oc get managedclusters
+Test image access control:
+# Test authorized image pull
+oc run test-authorized --image=quay-registry.apps.cluster.local/admin/sample-nginx:latest -n quay-integration
+
+# Check pod creation status
+oc get pods -n quay-integration | grep test-authorized
+
+# Clean up test resources
+oc delete pod test-authorized -n quay-integration
+Subtask 3.4: Create Image Lifecycle Management Automation
+Configure automated image updates:
+cat << 'EOF' > image-update-automation.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: quay-image-updater
+  namespace: rhacm-image-management
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example/quay-image-configs
+    targetRevision: HEAD
+    path: image-configs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: quay-integration
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: image-update-config
+  namespace: rhacm-image-management
+data:
+  update-policy.yaml: |
+    imageUpdatePolicy:
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      registries:
+        - quay-registry.apps.cluster.local
+      updateStrategy: rolling
+      approvalRequired: true
+      notifications:
+        slack:
+          webhook: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+          channel: "#devops-alerts"
+EOF
+
+oc apply -f image-update-automation.yaml
+Validate complete integration:
+# Final validation script
+cat << 'EOF' > validate-integration.sh
+#!/bin/bash
+
+echo "=== Validating Quay-RHACM Integration ==="
+
+# Check Quay connectivity
+echo "1. Testing Quay registry connectivity..."
+curl -k -s https://quay-registry.apps.cluster.local/health/instance | grep -q "healthy" && echo "✓ Quay registry is healthy" || echo "✗ Quay registry issue"
+
+# Check RHACM policies
+echo "2. Checking RHACM policies..."
+POLICY_COUNT=$(oc get policies -n rhacm-image-management --no-headers | wc -l)
+echo "✓ Found $POLICY_COUNT image management policies"
+
+# Check image pull secrets
+echo "3. Validating image pull secrets..."
+oc get secret quay-registry-secret -n quay-integration >/dev/null 2>&1 && echo "✓ Image pull secret exists" || echo "✗ Image pull secret missing"
+
+# Check sample application
+echo "4. Checking sample application deployment..."
+READY_PODS=$(oc get pods -n quay-integration -l app=quay-sample-app --no-headers | grep Running | wc -l)
+echo "✓ $READY_PODS sample application pods running"
+
+# Check policy compliance
+echo "5. Verifying policy compliance..."
+COMPLIANT_POLICIES=$(oc get policies -n rhacm-image-management --no-headers | grep -c "Compliant")
+echo "✓ $COMPLIANT_POLICIES policies are compliant"
+
+echo "=== Integration validation complete ==="
+EOF
+
+chmod +x validate-integration.sh
+./validate-integration.sh
+Troubleshooting Tips
+Common Issues and Solutions
+Issue 1: Quay registry connection failures
+
+Symptom: Unable to pull images from Quay registry
+Solution:
+# Check registry secret
+oc get secret quay-registry-secret -n quay-integration -o yaml
+
+# Verify registry accessibility
+curl -k https://quay-registry.apps.cluster.local/v2/
+Issue 2: RHACM policies not applying
+
+Symptom: Policies show as non-compliant
+Solution:
+# Check placement binding
+oc get placementbinding -n rhacm-image-management
+
+# Verify managed cluster status
+oc get managedclusters
+Issue 3: Image pull authentication errors
+
+Symptom: ImagePullBackOff errors in pod events
+Solution:
+# Recreate image pull secret
+oc delete secret quay-registry-secret -n quay-integration
+oc create secret docker-registry quay-registry-secret \
+  --docker-server=quay-registry.apps.cluster.local \
+  --docker-username=admin \
+  --docker-password=password123 \
+  --docker-email=admin@example.com \
+  -n quay-integration
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Integrated Red Hat Quay with OpenShift clusters, establishing secure container image management across your infrastructure
+Configured RHACM for centralized image policy management, enabling consistent governance across multiple clusters
+Implemented image source control and access policies, ensuring only approved images are deployed in your environment
+Created automated image lifecycle management workflows, streamlining the process of image updates and security compliance
+Established monitoring and compliance validation mechanisms, providing visibility into image usage and policy adherence
+This integration provides several key benefits for enterprise container management:
+
+Security Enhancement: By centralizing image management through Quay and enforcing policies via RHACM, you've created a robust security framework that prevents unauthorized image usage and ensures vulnerability scanning compliance.
+
+Operational Efficiency: The automated policy enforcement and image lifecycle management reduce manual overhead while maintaining consistent standards across all managed clusters.
+
+Compliance and Governance: The implemented policies and monitoring capabilities provide the audit trails and compliance reporting necessary for enterprise environments.
+
+Scalability: This architecture scales effectively across multiple clusters and environments, making it suitable for large-scale enterprise deployments.
+
+The skills and configurations you've implemented in this lab form the foundation for enterprise-grade container image management in hybrid and multi-cloud environments, directly supporting the objectives of the Multicluster Management with Red Hat OpenShift Platform Plus certification path.

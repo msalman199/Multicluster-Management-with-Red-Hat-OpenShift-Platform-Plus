@@ -1,0 +1,39 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: quay-image-policy
+  namespace: rhacm-image-management
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.DS Data Security
+    policy.open-cluster-management.io/controls: PR.DS-6 Integrity Checking
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: quay-image-policy-config
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: quay-registry-secret
+                  namespace: '{{ fromClusterClaim "name" }}'
+                type: kubernetes.io/dockerconfigjson
+                data:
+                  .dockerconfigjson: eyJhdXRocyI6eyJxdWF5LXJlZ2lzdHJ5LmFwcHMuY2x1c3Rlci5sb2NhbCI6eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJwYXNzd29yZDEyMyIsImVtYWlsIjoiYWRtaW5AZXhhbXBsZS5jb20iLCJhdXRoIjoiWVdSdGFXNDZjR0Z6YzNkdmNtUXhNak09In19fQ==

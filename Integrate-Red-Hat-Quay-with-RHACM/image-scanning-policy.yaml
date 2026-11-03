@@ -1,0 +1,33 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: image-scanning-policy
+  namespace: rhacm-image-management
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: image-vulnerability-policy
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: image-scanning-config
+                  namespace: '{{ fromClusterClaim "name" }}'
+                data:
+                  scanning-enabled: "true"
+                  max-severity: "medium"
+                  scan-on-push: "true"

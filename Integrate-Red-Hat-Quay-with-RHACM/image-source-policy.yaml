@@ -1,0 +1,45 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: image-source-control-policy
+  namespace: rhacm-image-management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: allowed-registries-policy
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+              - kube-*
+              - openshift-*
+            include:
+              - default
+              - quay-integration
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: config.openshift.io/v1
+                kind: Image
+                metadata:
+                  name: cluster
+                spec:
+                  allowedRegistriesForImport:
+                    - domainName: quay-registry.apps.cluster.local
+                      insecure: false
+                    - domainName: registry.redhat.io
+                      insecure: false
+                    - domainName: quay.io
+                      insecure: false
+                  registrySources:
+                    allowedRegistries:
+                      - quay-registry.apps.cluster.local
+                      - registry.redhat.io
+                      - quay.io
+                      - registry.access.redhat.com

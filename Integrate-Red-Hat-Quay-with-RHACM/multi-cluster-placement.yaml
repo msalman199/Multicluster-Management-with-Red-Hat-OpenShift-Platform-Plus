@@ -1,0 +1,37 @@
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: quay-policy-placement
+  namespace: rhacm-image-management
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - dev
+          - staging
+          - production
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: quay-policy-binding
+  namespace: rhacm-image-management
+placementRef:
+  name: quay-policy-placement
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: quay-image-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+  - name: image-source-control-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+  - name: image-scanning-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
