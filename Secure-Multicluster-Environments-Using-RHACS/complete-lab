@@ -1,0 +1,171 @@
+Lab: Securing Multicluster Workloads with Red Hat Advanced Cluster Security (RHACS)
+Objectives
+By the end of this lab, students will be able to:
+
+Create a custom RHACS security policy that detects privileged containers using the RHACS web console
+Trigger and verify a policy violation using a deliberately misconfigured test deployment
+Query RHACS violations using the roxctl CLI to confirm detection and enforcement
+Interpret RHACS violation details to understand how security findings map to running workloads
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes/OpenShift concepts (Deployments, Pods, namespaces)
+Familiarity with command-line interfaces and oc/kubectl
+Basic knowledge of container security concepts (privileged containers, security contexts)
+This lab assumes an OpenShift cluster with RHACS (StackRox) Central already installed in the stackrox namespace, and that you are working in an isolated, self-owned practice environment authorized for security testing.
+
+Required CLI tool install (if roxctl is not already present):
+
+# Download roxctl matching your Central version (example uses a generic release channel)
+curl -L -f -o roxctl \
+  "https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
+chmod +x roxctl
+sudo mv roxctl /usr/local/bin/roxctl
+
+# Verify installation
+roxctl version
+If curl/jq are not installed:
+
+sudo dnf install -y curl jq
+Task 1: Create and Verify a Privileged Container Detection Policy
+RHACS ships with a large set of built-in default policies, and one of them, "Privileged Container", already detects any deployment that runs a container in privileged mode. In this task you will confirm this policy is enabled, trigger it with a test workload, and verify the resulting violation. This avoids depending on undocumented API request shapes while still giving you real, hands-on experience with policy enforcement.
+
+Step 1: Authenticate to RHACS Central
+# Get the RHACS Central route
+export CENTRAL_HOST=$(oc get route central -n stackrox -o jsonpath='{.spec.host}')
+echo "Central URL: https://${CENTRAL_HOST}"
+
+# Retrieve the admin password (default install method)
+oc get secret central-htpasswd -n stackrox -o jsonpath='{.data.password}' | base64 -d
+echo
+Log in to the RHACS Central web console at https://<CENTRAL_HOST> using the username admin and the password printed above.
+
+Next, generate an API token so you can query RHACS from the command line:
+
+In the RHACS console, go to Platform Configuration > Integrations > Authentication Tokens > API Token.
+Click Generate Token, name it lab-token, assign it the Analyst role, and click Generate.
+Copy the token value immediately (it is shown only once).
+# Store the token for use in later commands (paste your generated token below)
+export ROX_API_TOKEN="<paste-your-generated-token-here>"
+export ROX_CENTRAL_ADDRESS="${CENTRAL_HOST}:443"
+
+# Confirm authentication works
+roxctl central whoami --insecure-skip-tls-verify \
+  --endpoint "${ROX_CENTRAL_ADDRESS}" \
+  --token "${ROX_API_TOKEN}"
+Deliverable: The roxctl central whoami command returns your token's username and role (Analyst) without an authentication error.
+
+Step 2: Confirm the Built-in "Privileged Container" Policy is Enabled
+# List policies and filter for the privileged container policy
+roxctl policy list --insecure-skip-tls-verify \
+  --endpoint "${ROX_CENTRAL_ADDRESS}" \
+  --token "${ROX_API_TOKEN}" | grep -i "privileged container"
+In the web console, navigate to Platform Configuration > Policies, search for Privileged Container, and open it. Confirm:
+
+Lifecycle Stages: Deploy and Runtime
+Enforcement: may be disabled by default in some installs; if so, click Enable Policy and, under enforcement behavior, ensure at least deploy-time alerting is active.
+Policy Criteria shows a condition on the field Privileged set to true.
+If the policy is disabled, enable it now by toggling it to Enabled and saving.
+
+Deliverable: The policy list output includes a line containing Privileged Container, and the console shows the policy status as Enabled.
+
+Step 3: Deploy a Test Workload That Violates the Policy
+cat << 'EOF' > test-privileged-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-privileged-app
+  namespace: default
+  labels:
+    app: test-privileged-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-privileged-app
+  template:
+    metadata:
+      labels:
+        app: test-privileged-app
+    spec:
+      containers:
+      - name: test-container
+        image: registry.access.redhat.com/ubi8/ubi-minimal:latest
+        command: ["sleep", "3600"]
+        securityContext:
+          privileged: true
+EOF
+
+oc apply -f test-privileged-app.yaml
+
+# Wait for the pod to be scheduled
+oc get pods -n default -l app=test-privileged-app
+Deliverable: oc get pods -n default -l app=test-privileged-app shows a pod in Running (or ContainerCreating briefly transitioning to Running) state. Note: if your cluster enforces the OpenShift restricted SCC cluster-wide, the pod may be denied by admission control instead of by RHACS â if the pod is Pending or fails admission, check oc describe pod for an SCC-related event; this itself demonstrates defense-in-depth and is an acceptable lab outcome, but continue to Step 4 to check RHACS regardless, since RHACS also evaluates at build/deploy time via the API even for denied objects submitted to the cluster.
+
+Step 4: Verify the Violation in RHACS
+# Query active violations related to the privileged container policy
+curl -k -s -X GET \
+  "https://${CENTRAL_HOST}/v1/alerts?query=Policy%3APrivileged%20Container%2BViolation%20State%3AACTIVE" \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" | \
+  jq '.alerts[] | {policy: .policy.name, deployment: .deployment.name, namespace: .deployment.namespace, severity: .policy.severity}'
+You should also confirm this visually:
+
+In the RHACS console, go to Violations.
+Filter by Deployment = test-privileged-app.
+Click the violation row to open details, and confirm the Policy column shows Privileged Container and the violation message references the container running in privileged mode.
+Deliverable: The jq output prints at least one JSON object with "policy": "Privileged Container" and "deployment": "test-privileged-app". The console Violations page shows a matching entry with severity High (or Medium, depending on your RHACS default policy version).
+
+Step 5: Clean Up the Test Workload
+oc delete -f test-privileged-app.yaml
+Deliverable: oc get pods -n default -l app=test-privileged-app returns no resources found, confirming cleanup.
+
+Task 2: Generate and Review a Compliance Snapshot with roxctl
+RHACS includes built-in compliance standards (such as CIS Benchmarks) that you can run against your cluster without writing any custom policy JSON. In this task you will trigger a compliance scan and review results directly through roxctl, giving you a repeatable, scriptable way to check cluster security posture.
+
+Step 1: List Available Compliance Standards
+roxctl central whoami --insecure-skip-tls-verify \
+  --endpoint "${ROX_CENTRAL_ADDRESS}" \
+  --token "${ROX_API_TOKEN}"
+
+# List compliance standards known to this RHACS installation
+curl -k -s -X GET \
+  "https://${CENTRAL_HOST}/v1/compliance/standards" \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" | \
+  jq '.standards[] | {id: .id, name: .name}'
+Deliverable: The command prints a list of standards such as CIS_Kubernetes_v1_5 and/or CIS_Docker_v1_2_0 (exact set depends on your RHACS version), each with an id and name field.
+
+Step 2: Trigger a Compliance Run
+In the RHACS console, navigate to Compliance > Manage Standards & Scans (or the "Compliance" left-nav item depending on version), select one available standard (for example, CIS Kubernetes v1.5 Benchmark), and click Scan (or Run Compliance Scan) to trigger evaluation against your cluster.
+
+# Confirm a compliance run exists for this cluster by listing runs
+curl -k -s -X GET \
+  "https://${CENTRAL_HOST}/v1/complianceManager/runs" \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" | \
+  jq '.runs[] | {id: .id, standardId: .standardId, state: .state}'
+Deliverable: At least one run entry appears with "state": "FINISHED" (allow 30-60 seconds and re-run the query if it still shows RUNNING).
+
+Step 3: Export and Review the Compliance Results
+# Save the raw compliance run list to a local file for review
+curl -k -s -X GET \
+  "https://${CENTRAL_HOST}/v1/complianceManager/runs" \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  -o compliance-runs.json
+
+cat compliance-runs.json | jq '.runs[] | select(.state=="FINISHED")'
+In the RHACS console, open Compliance, select the standard you scanned, and review the pass/fail breakdown by cluster and by control. Identify one failed control and read its remediation guidance shown in the console.
+
+Deliverable: A local file compliance-runs.json exists and contains at least one finished run; you can name one specific failed compliance control and its stated remediation from the console.
+
+Expected Outcomes
+A working, verified RHACS policy (Privileged Container) actively detecting insecure workloads in your cluster
+A confirmed violation record, reviewed both via roxctl/API and the RHACS console, tied to a specific test deployment
+A saved compliance run export (compliance-runs.json) demonstrating cluster-wide security posture reporting
+Troubleshooting
+Issue: roxctl command fails with x509: certificate signed by unknown authority Fix: Add the --insecure-skip-tls-verify flag to the roxctl command (already used throughout this lab), or trust Central's CA certificate for production use.
+
+Issue: curl requests return {"error":"Unauthenticated","message":"..."} Fix: Your token may have expired or been copied incorrectly. Regenerate a token in Platform Configuration > Integrations > Authentication Tokens > API Token and re-export it: export ROX_API_TOKEN="<new-token>".
+
+Issue: No violation appears for test-privileged-app after several minutes Fix: Confirm the policy is enabled: roxctl policy list --insecure-skip-tls-verify --endpoint "${ROX_CENTRAL_ADDRESS}" --token "${ROX_API_TOKEN}" | grep -i privileged. Also confirm the Sensor is running and connected: oc get pods -n stackrox -l app=sensor.
+
+Conclusion
+In this lab, you authenticated to RHACS Central, confirmed and exercised the built-in "Privileged Container" security policy by deploying an intentionally misconfigured workload, and verified the resulting violation through both the roxctl CLI and the RHACS web console. You then used RHACS's compliance scanning capability to generate and review a cluster compliance snapshot against a built-in standard such as CIS Kubernetes Benchmark. Together these tasks demonstrate the core RHACS workflow of policy-based detection, violation review, and compliance reporting, which forms the foundation for building custom policies and multicluster monitoring dashboards in more advanced RHACS deployments. As a next step, consider exploring custom policy creation through the RHACS console's Policy Builder UI, which validates field names and operators interactively before saving.
