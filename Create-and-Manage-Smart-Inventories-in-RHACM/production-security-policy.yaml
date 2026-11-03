@@ -1,0 +1,69 @@
+# Create file: production-security-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: production-security-policy
+  namespace: default
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Access Control
+    policy.open-cluster-management.io/controls: PR.AC-4
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: production-pod-security-policy
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+            - kube-*
+            - openshift-*
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: LimitRange
+                metadata:
+                  name: production-limits
+                spec:
+                  limits:
+                  - default:
+                      cpu: "1"
+                      memory: "1Gi"
+                    defaultRequest:
+                      cpu: "0.1"
+                      memory: "128Mi"
+                    type: Container
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: production-security-policy-binding
+  namespace: default
+spec:
+  bindingOverrides:
+    remediationAction: enforce
+  placementRef:
+    name: production-clusters-placement
+    kind: PlacementRule
+    apiGroup: apps.open-cluster-management.io
+  subjects:
+  - name: production-security-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: production-clusters-placement
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: production

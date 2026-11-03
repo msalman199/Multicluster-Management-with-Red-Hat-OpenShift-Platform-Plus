@@ -1,0 +1,45 @@
+# Create file: cluster-resource-quotas.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: compute-cluster-quotas
+  namespace: default
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: compute-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+            - default
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: compute-cluster-quota
+                spec:
+                  hard:
+                    requests.cpu: "100"
+                    requests.memory: "200Gi"
+                    limits.cpu: "200"
+                    limits.memory: "400Gi"
+                    persistentvolumeclaims: "50"
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: compute-clusters-placement
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster-type: compute

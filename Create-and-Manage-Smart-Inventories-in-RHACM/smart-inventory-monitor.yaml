@@ -1,0 +1,44 @@
+# Create file: smart-inventory-monitor.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smart-inventory-monitor
+  namespace: default
+data:
+  monitor.sh: |
+    #!/bin/bash
+    echo "Monitoring smart inventory changes..."
+    while true; do
+      echo "=== $(date) ==="
+      echo "Production clusters:"
+      oc get managedclusters -l environment=production --no-headers | wc -l
+      echo "US region clusters:"
+      oc get managedclusters -l 'region in (us-east,us-west)' --no-headers | wc -l
+      echo "Compute clusters:"
+      oc get managedclusters -l cluster-type=compute --no-headers | wc -l
+      echo "---"
+      sleep 30
+    done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smart-inventory-monitor-job
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - name: monitor
+        image: registry.redhat.io/ubi8/ubi:latest
+        command: ["/bin/bash"]
+        args: ["/scripts/monitor.sh"]
+        volumeMounts:
+        - name: script-volume
+          mountPath: /scripts
+      volumes:
+      - name: script-volume
+        configMap:
+          name: smart-inventory-monitor
+          defaultMode: 0755
+      restartPolicy: Never

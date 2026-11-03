@@ -1,0 +1,557 @@
+Lab 15: Create and Manage Smart Inventories in RHACM
+Lab Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept and benefits of Smart Inventories in Red Hat Advanced Cluster Management (RHACM)
+Create dynamic smart inventories based on cluster labels, tags, and metadata criteria
+Implement smart inventories for automated policy and resource management
+Test and validate dynamic host management capabilities
+Troubleshoot common smart inventory configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with Red Hat OpenShift Container Platform
+Knowledge of YAML syntax and structure
+Understanding of cluster management concepts
+Experience with command-line interface operations
+Basic knowledge of policy management in RHACM
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines with RHACM pre-installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+RHACM Hub cluster (pre-configured)
+Multiple managed OpenShift clusters
+Command-line tools (oc, kubectl)
+Web console access to RHACM
+Task 1: Create Smart Inventories Based on Labels or Tags
+Subtask 1.1: Understanding Smart Inventories
+Smart Inventories in RHACM are dynamic collections of managed clusters that automatically update based on defined criteria such as labels, annotations, or cluster properties.
+
+Key Benefits:
+
+Dynamic Management: Automatically include/exclude clusters based on changing criteria
+Scalability: Manage hundreds of clusters efficiently
+Consistency: Apply policies uniformly across similar cluster groups
+Automation: Reduce manual cluster grouping tasks
+Subtask 1.2: Access RHACM Console
+Open your web browser and navigate to the RHACM console
+Log in with your provided credentials
+Navigate to Infrastructure → Clusters to view your managed clusters
+# Verify cluster access via CLI
+oc get managedclusters
+Subtask 1.3: Examine Existing Cluster Labels
+Before creating smart inventories, examine the labels on your managed clusters:
+
+# List all managed clusters with their labels
+oc get managedclusters --show-labels
+
+# Get detailed information about a specific cluster
+oc describe managedcluster <cluster-name>
+Subtask 1.4: Add Labels to Managed Clusters
+Add meaningful labels to your clusters for smart inventory grouping:
+
+# Add environment label to clusters
+oc label managedcluster cluster1 environment=production
+oc label managedcluster cluster2 environment=development
+oc label managedcluster cluster3 environment=staging
+
+# Add region labels
+oc label managedcluster cluster1 region=us-east
+oc label managedcluster cluster2 region=us-west
+oc label managedcluster cluster3 region=eu-central
+
+# Add cluster type labels
+oc label managedcluster cluster1 cluster-type=compute
+oc label managedcluster cluster2 cluster-type=edge
+oc label managedcluster cluster3 cluster-type=storage
+Subtask 1.5: Create Your First Smart Inventory
+Create a smart inventory for production clusters:
+
+# Create file: production-smart-inventory.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSet
+metadata:
+  name: production-clusters
+  labels:
+    inventory-type: smart
+    environment: production
+spec:
+  clusterSelector:
+    selectorType: ExclusiveClusterSetLabel
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSetBinding
+metadata:
+  name: production-clusters-binding
+  namespace: default
+spec:
+  clusterSet: production-clusters
+Apply the smart inventory:
+
+# Apply the smart inventory configuration
+oc apply -f production-smart-inventory.yaml
+
+# Verify the smart inventory was created
+oc get managedclustersets
+Subtask 1.6: Create Region-Based Smart Inventory
+Create a smart inventory for US-based clusters:
+
+# Create file: us-region-smart-inventory.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSet
+metadata:
+  name: us-region-clusters
+  labels:
+    inventory-type: smart
+    region: us
+spec:
+  clusterSelector:
+    selectorType: LabelSelector
+    labelSelector:
+      matchExpressions:
+      - key: region
+        operator: In
+        values:
+        - us-east
+        - us-west
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSetBinding
+metadata:
+  name: us-region-clusters-binding
+  namespace: default
+spec:
+  clusterSet: us-region-clusters
+# Apply the region-based smart inventory
+oc apply -f us-region-smart-inventory.yaml
+
+# Verify clusters are automatically included
+oc get managedclusters -l 'region in (us-east,us-west)'
+Subtask 1.7: Create Complex Smart Inventory with Multiple Criteria
+Create a smart inventory combining multiple criteria:
+
+# Create file: complex-smart-inventory.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSet
+metadata:
+  name: production-compute-clusters
+  labels:
+    inventory-type: smart
+    purpose: high-performance
+spec:
+  clusterSelector:
+    selectorType: LabelSelector
+    labelSelector:
+      matchLabels:
+        environment: production
+        cluster-type: compute
+      matchExpressions:
+      - key: region
+        operator: In
+        values:
+        - us-east
+        - eu-central
+# Apply the complex smart inventory
+oc apply -f complex-smart-inventory.yaml
+
+# Verify the selection criteria
+oc get managedclusters -l environment=production,cluster-type=compute
+Task 2: Use Smart Inventories for Policy and Resource Management
+Subtask 2.1: Create Governance Policies for Smart Inventories
+Create a security policy that applies to production clusters:
+
+# Create file: production-security-policy.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: production-security-policy
+  namespace: default
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Access Control
+    policy.open-cluster-management.io/controls: PR.AC-4
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: production-pod-security-policy
+        spec:
+          remediationAction: enforce
+          severity: high
+          namespaceSelector:
+            exclude:
+            - kube-*
+            - openshift-*
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: LimitRange
+                metadata:
+                  name: production-limits
+                spec:
+                  limits:
+                  - default:
+                      cpu: "1"
+                      memory: "1Gi"
+                    defaultRequest:
+                      cpu: "0.1"
+                      memory: "128Mi"
+                    type: Container
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: production-security-policy-binding
+  namespace: default
+spec:
+  bindingOverrides:
+    remediationAction: enforce
+  placementRef:
+    name: production-clusters-placement
+    kind: PlacementRule
+    apiGroup: apps.open-cluster-management.io
+  subjects:
+  - name: production-security-policy
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: production-clusters-placement
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: production
+Subtask 2.2: Apply Policy to Smart Inventory
+# Apply the production security policy
+oc apply -f production-security-policy.yaml
+
+# Verify policy creation
+oc get policies -n default
+
+# Check policy status
+oc describe policy production-security-policy -n default
+Subtask 2.3: Create Application Deployment Using Smart Inventories
+Create an application that deploys only to development clusters:
+
+# Create file: dev-app-deployment.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-sample-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: guestbook
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: dev-clusters-placement
+  namespace: argocd
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: development
+Subtask 2.4: Create Resource Quotas for Smart Inventories
+Apply different resource quotas based on cluster types:
+
+# Create file: cluster-resource-quotas.yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: compute-cluster-quotas
+  namespace: default
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: compute-resource-quota
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include:
+            - default
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ResourceQuota
+                metadata:
+                  name: compute-cluster-quota
+                spec:
+                  hard:
+                    requests.cpu: "100"
+                    requests.memory: "200Gi"
+                    limits.cpu: "200"
+                    limits.memory: "400Gi"
+                    persistentvolumeclaims: "50"
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: compute-clusters-placement
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster-type: compute
+# Apply resource quota policy
+oc apply -f cluster-resource-quotas.yaml
+
+# Monitor policy compliance
+oc get policies -n default
+Task 3: Test Dynamic Host Management
+Subtask 3.1: Test Dynamic Cluster Addition
+Simulate adding a new cluster and verify it's automatically included in smart inventories:
+
+# Create a new managed cluster with appropriate labels
+cat << EOF | oc apply -f -
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: cluster4
+  labels:
+    environment: production
+    region: us-west
+    cluster-type: compute
+    cloud: aws
+spec:
+  hubAcceptsClient: true
+EOF
+Subtask 3.2: Verify Automatic Inclusion
+Check if the new cluster is automatically included in relevant smart inventories:
+
+# Check if cluster4 is included in production clusters
+oc get managedclusters -l environment=production
+
+# Check if cluster4 is included in US region clusters
+oc get managedclusters -l 'region in (us-east,us-west)'
+
+# Check if cluster4 is included in complex smart inventory
+oc get managedclusters -l environment=production,cluster-type=compute
+Subtask 3.3: Test Label Changes and Dynamic Updates
+Modify cluster labels and observe smart inventory updates:
+
+# Change cluster2 from development to production
+oc label managedcluster cluster2 environment=production --overwrite
+
+# Verify cluster2 is now included in production smart inventory
+oc get managedclusters -l environment=production
+
+# Change cluster3 region
+oc label managedcluster cluster3 region=us-east --overwrite
+
+# Verify cluster3 is now included in US region smart inventory
+oc get managedclusters -l 'region in (us-east,us-west)'
+Subtask 3.4: Test Policy Application to Dynamic Groups
+Verify that policies automatically apply to newly included clusters:
+
+# Check policy compliance on newly included clusters
+oc get policies -n default
+
+# Describe policy to see which clusters it applies to
+oc describe policy production-security-policy -n default
+
+# Check compliance status
+oc get policy production-security-policy -n default -o yaml | grep -A 10 status
+Subtask 3.5: Create Monitoring for Smart Inventory Changes
+Set up monitoring to track smart inventory changes:
+
+# Create file: smart-inventory-monitor.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smart-inventory-monitor
+  namespace: default
+data:
+  monitor.sh: |
+    #!/bin/bash
+    echo "Monitoring smart inventory changes..."
+    while true; do
+      echo "=== $(date) ==="
+      echo "Production clusters:"
+      oc get managedclusters -l environment=production --no-headers | wc -l
+      echo "US region clusters:"
+      oc get managedclusters -l 'region in (us-east,us-west)' --no-headers | wc -l
+      echo "Compute clusters:"
+      oc get managedclusters -l cluster-type=compute --no-headers | wc -l
+      echo "---"
+      sleep 30
+    done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smart-inventory-monitor-job
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - name: monitor
+        image: registry.redhat.io/ubi8/ubi:latest
+        command: ["/bin/bash"]
+        args: ["/scripts/monitor.sh"]
+        volumeMounts:
+        - name: script-volume
+          mountPath: /scripts
+      volumes:
+      - name: script-volume
+        configMap:
+          name: smart-inventory-monitor
+          defaultMode: 0755
+      restartPolicy: Never
+# Apply the monitoring job
+oc apply -f smart-inventory-monitor.yaml
+
+# Check job logs
+oc logs job/smart-inventory-monitor-job -n default -f
+Subtask 3.6: Test Cluster Removal and Cleanup
+Test what happens when clusters are removed:
+
+# Remove a cluster from management
+oc delete managedcluster cluster4
+
+# Verify it's removed from smart inventories
+oc get managedclusters -l environment=production
+
+# Check if policies are automatically updated
+oc describe policy production-security-policy -n default
+Subtask 3.7: Performance Testing with Multiple Clusters
+Create multiple test clusters to verify smart inventory performance:
+
+# Create multiple test clusters
+for i in {5..10}; do
+  cat << EOF | oc apply -f -
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: test-cluster$i
+  labels:
+    environment: testing
+    region: us-central
+    cluster-type: edge
+    test-batch: batch1
+spec:
+  hubAcceptsClient: true
+EOF
+done
+
+# Verify all test clusters are created
+oc get managedclusters -l test-batch=batch1
+
+# Create smart inventory for test clusters
+cat << EOF | oc apply -f -
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: ManagedClusterSet
+metadata:
+  name: test-clusters
+  labels:
+    inventory-type: smart
+    purpose: testing
+spec:
+  clusterSelector:
+    selectorType: LabelSelector
+    labelSelector:
+      matchLabels:
+        test-batch: batch1
+EOF
+Troubleshooting Common Issues
+Issue 1: Smart Inventory Not Updating
+Problem: Clusters not automatically included in smart inventories
+
+Solution:
+
+# Check cluster labels
+oc get managedclusters --show-labels
+
+# Verify smart inventory selector
+oc describe managedclusterset <smart-inventory-name>
+
+# Check for typos in label selectors
+oc get managedclusterset <smart-inventory-name> -o yaml
+Issue 2: Policy Not Applying to Smart Inventory
+Problem: Policies not applying to clusters in smart inventory
+
+Solution:
+
+# Check placement rule
+oc describe placementrule <placement-rule-name>
+
+# Verify policy binding
+oc describe placementbinding <binding-name>
+
+# Check policy status
+oc get policy <policy-name> -o yaml | grep -A 20 status
+Issue 3: Performance Issues with Large Smart Inventories
+Problem: Slow updates with many clusters
+
+Solution:
+
+# Use more specific label selectors
+# Avoid complex matchExpressions when possible
+# Monitor cluster controller logs
+oc logs -n open-cluster-management deployment/cluster-manager -f
+Lab Validation
+Validation Checklist
+Verify your lab completion by checking:
+
+ Created at least 3 different smart inventories
+ Applied policies to smart inventories
+ Tested dynamic cluster addition and removal
+ Verified automatic policy application
+ Monitored smart inventory changes
+ Troubleshot common issues
+Validation Commands
+# List all smart inventories
+oc get managedclustersets
+
+# Check policy compliance
+oc get policies -A
+
+# Verify cluster labels
+oc get managedclusters --show-labels
+
+# Check placement rules
+oc get placementrules -A
+Conclusion
+In this lab, you have successfully:
+
+Created Dynamic Smart Inventories: Built smart inventories that automatically group clusters based on labels, tags, and metadata criteria
+Implemented Policy Management: Applied governance policies and resource management rules to smart inventories for automated compliance
+Tested Dynamic Behavior: Validated that smart inventories automatically update when cluster properties change
+Monitored and Troubleshot: Set up monitoring for smart inventory changes and resolved common configuration issues
+Why This Matters: Smart Inventories in RHACM provide a powerful way to manage large-scale, dynamic cluster environments. They enable:
+
+Scalability: Manage hundreds or thousands of clusters efficiently
+Automation: Reduce manual intervention in cluster grouping and policy application
+Consistency: Ensure uniform policy application across similar cluster groups
+Flexibility: Adapt to changing infrastructure requirements automatically
+These skills are essential for managing enterprise-scale OpenShift deployments and are directly applicable to real-world multicluster management scenarios. Smart inventories form the foundation for advanced RHACM features like automated policy enforcement, application lifecycle management, and compliance reporting.
+
+The techniques you've learned will help you build robust, scalable cluster management solutions that can adapt to changing business requirements while maintaining security and compliance standards across your entire cluster fleet.
