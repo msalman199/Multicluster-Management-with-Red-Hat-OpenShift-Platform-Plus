@@ -1,0 +1,30 @@
+Multicluster Scaling Status Report
+Generated: Tue Nov  3 04:37:36 UTC 2026
+====================================
+
+[0;34m=== Development (spoke-1) (namespace: frontend-dev) ===[0m
+[1;33mDeployment:[0m
+  deployment not found
+[1;33mHPA:[0m
+  HPA not found
+[1;33mPods:[0m
+  no pods found
+[1;33mResource usage:[0m
+  metrics not available
+
+[0;34m=== Production (spoke-2) (namespace: frontend-prod) ===[0m
+[1;33mDeployment:[0m
+  deployment not found
+[1;33mHPA:[0m
+  HPA not found
+[1;33mPods:[0m
+  no pods found
+[1;33mResource usage:[0m
+  metrics not available
+
+Notes:
+------
+1. Compare replica counts against HPA minReplicas/maxReplicas bounds.
+2. Investigate any HPA showing <unknown> targets; this usually means
+   the metrics API or resource requests are missing.
+3. Review ArgoCD sync status with: oc get applications -n openshift-gitops

@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend-spoke-2
+  namespace: openshift-gitops
+  labels:
+    cluster: spoke-2
+    environment: production
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR-USERNAME/multicluster-scaling.git
+    targetRevision: main
+    path: applications/frontend/overlays/production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: frontend-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
