@@ -1,0 +1,368 @@
+Lab 16: Automate Cross-Cluster Management Tasks Using RHACM API
+Objectives
+By the end of this lab, you will be able to:
+
+Understand the Red Hat Advanced Cluster Management (RHACM) API structure and authentication methods
+Use the RHACM API to discover and query managed clusters from the hub cluster
+Automate policy creation and compliance checking across multiple managed clusters
+Build a reusable configuration-driven automation script for cross-cluster operations
+Implement basic error handling and validation in automation scripts
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes and OpenShift concepts
+Familiarity with REST APIs and HTTP methods
+Knowledge of YAML and JSON formats
+Experience with command-line tools (oc, curl, jq)
+Understanding of Red Hat Advanced Cluster Management (RHACM) concepts, including ManagedCluster, Policy, PlacementRule, and PlacementBinding resources
+Basic shell scripting knowledge
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines with all necessary tools pre-installed. Simply click Start Lab to begin - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+An RHACM Hub cluster with API access
+Two or more managed clusters already imported into RHACM
+A pre-authenticated oc CLI session with cluster-admin (or equivalent) privileges on the hub
+Required CLI tools: oc, curl, jq
+Verify the required tools are available before starting:
+
+oc version --client
+jq --version
+curl --version | head -n 1
+Expected result: each command prints a version string with no "command not found" errors.
+
+Task 1: Discover Managed Clusters Using the RHACM API
+Subtask 1.1: Authenticate and Verify API Connectivity
+Log in to the hub cluster (if not already logged in) and set environment variables
+# Confirm current login context (hub cluster)
+oc whoami
+oc whoami --show-server
+
+# Set the OpenShift/Kubernetes API endpoint for the hub cluster
+export OCP_API_URL=$(oc whoami --show-server)
+
+# Get the authentication token for API calls
+export TOKEN=$(oc whoami -t)
+
+# Verify the token was retrieved (only prints a short prefix, not the full secret)
+echo "Token acquired: ${TOKEN:0:15}..."
+Expected result: oc whoami returns a username, OCP_API_URL is set to an https://api...:6443 style URL, and the token prefix is printed.
+
+Test connectivity to the Kubernetes API and the RHACM ManagedCluster API
+# Basic API connectivity check
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$OCP_API_URL/api/v1/namespaces" | jq -r '.items[].metadata.name' | head -n 5
+
+# Confirm the RHACM managedclusters API group is available
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$OCP_API_URL/apis/cluster.open-cluster-management.io/v1/managedclusters" | jq '.kind'
+Expected result: the first command lists at least a few namespace names (for example default, kube-system, open-cluster-management); the second command prints "ManagedClusterList", confirming the RHACM API group is reachable and authenticated.
+
+Subtask 1.2: List Managed Clusters and Their Status
+Create a reusable script that discovers all managed clusters currently known to the hub, rather than hardcoding names. Every later task in this lab reuses this discovery logic so the cluster list always matches your real environment.
+
+cat > list_clusters.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+: "${TOKEN:?TOKEN environment variable is not set. Run: export TOKEN=$(oc whoami -t)}"
+: "${OCP_API_URL:?OCP_API_URL environment variable is not set. Run: export OCP_API_URL=$(oc whoami --show-server)}"
+
+# Function to list managed clusters and their availability status
+list_managed_clusters() {
+    echo "=== Managed Clusters ==="
+
+    local response
+    response=$(curl -sk -H "Authorization: Bearer $TOKEN" \
+        "$OCP_API_URL/apis/cluster.open-cluster-management.io/v1/managedclusters")
+
+    local count
+    count=$(echo "$response" | jq '.items | length')
+
+    if [ "$count" -eq 0 ]; then
+        echo "No managed clusters found."
+        return 1
+    fi
+
+    echo "$response" | jq -r '.items[] |
+        "\(.metadata.name) - Available: " +
+        ((.status.conditions[]? | select(.type=="ManagedClusterConditionAvailable") | .status) // "Unknown")'
+
+    echo ""
+    echo "Total managed clusters: $count"
+}
+
+# Function to print details for a single cluster
+get_cluster_details() {
+    local cluster_name=$1
+
+    echo "=== Cluster Details: $cluster_name ==="
+
+    curl -sk -H "Authorization: Bearer $TOKEN" \
+        "$OCP_API_URL/apis/cluster.open-cluster-management.io/v1/managedclusters/$cluster_name" | \
+        jq '{
+            name: .metadata.name,
+            labels: .metadata.labels,
+            availability: (.status.conditions[]? | select(.type=="ManagedClusterConditionAvailable") | .status),
+            kubernetesVersion: .status.version.kubernetes
+        }'
+}
+
+# Main execution
+list_managed_clusters
+
+echo ""
+echo "=== Detailed Cluster Information ==="
+cluster_names=$(curl -sk -H "Authorization: Bearer $TOKEN" \
+    "$OCP_API_URL/apis/cluster.open-cluster-management.io/v1/managedclusters" | \
+    jq -r '.items[].metadata.name')
+
+for cluster in $cluster_names; do
+    get_cluster_details "$cluster"
+    echo ""
+done
+EOF
+
+chmod +x list_clusters.sh
+./list_clusters.sh
+Deliverable: Run ./list_clusters.sh and capture its output. Expected result: a summary section listing each managed cluster with Available: True, followed by a total count, and then a detailed JSON block per cluster showing name, labels, availability, and kubernetesVersion.
+
+Subtask 1.3: Save the Discovered Cluster List for Reuse
+To keep later automation consistent with your actual environment, persist the discovered cluster names to a file that subsequent scripts will read.
+
+# Discover cluster names dynamically and save them for reuse in Task 2
+curl -sk -H "Authorization: Bearer $TOKEN" \
+    "$OCP_API_URL/apis/cluster.open-cluster-management.io/v1/managedclusters" | \
+    jq -r '.items[].metadata.name' > discovered_clusters.txt
+
+echo "Discovered clusters saved to discovered_clusters.txt:"
+cat discovered_clusters.txt
+Expected result: discovered_clusters.txt contains one managed cluster name per line, matching the names shown in Subtask 1.2. If this file is empty, resolve cluster import/availability issues before continuing, since Task 2 depends on it.
+
+Task 2: Automate Policy Creation and Compliance Checking
+Subtask 2.1: Build a Configuration-Driven Policy Generator
+Rather than hardcoding cluster names inside a policy template, this script reads the cluster list from discovered_clusters.txt (created in Task 1) and generates a JSON configuration file that reflects your actual lab environment.
+
+cat > generate_config.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+CLUSTERS_FILE="discovered_clusters.txt"
+CONFIG_FILE="automation_config.json"
+
+if [ ! -s "$CLUSTERS_FILE" ]; then
+    echo "ERROR: $CLUSTERS_FILE not found or empty. Run list_clusters.sh / Task 1 Subtask 1.3 first." >&2
+    exit 1
+fi
+
+# Build a JSON array of cluster names from the discovered clusters file
+cluster_json=$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$CLUSTERS_FILE")
+
+# Generate automation_config.json using the ACTUAL discovered cluster names
+jq -n \
+  --argjson clusters "$cluster_json" \
+  '{
+    clusters: $clusters,
+    policies: [
+      {
+        name: "security-baseline",
+        enforcement: "inform"
+      },
+      {
+        name: "resource-baseline",
+        enforcement: "inform"
+      }
+    ]
+  }' > "$CONFIG_FILE"
+
+echo "Configuration file created: $CONFIG_FILE"
+cat "$CONFIG_FILE"
+EOF
+
+chmod +x generate_config.sh
+./generate_config.sh
+Deliverable: automation_config.json exists and its clusters array contains the same cluster names as discovered_clusters.txt (not placeholder names like cluster1/cluster2/cluster3). Expected result: the printed JSON shows a clusters array matching your real environment and a policies array with two entries.
+
+Subtask 2.2: Create and Apply a Security Policy Across Discovered Clusters
+cat > create_policy.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="automation_config.json"
+
+: "${CONFIG_FILE:?}"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: $CONFIG_FILE not found. Run generate_config.sh first." >&2
+    exit 1
+fi
+
+create_security_policy() {
+    local policy_name=$1
+    local enforcement=$2
+
+    # Build a PlacementRule cluster-name match list from the config file
+    local values_yaml
+    values_yaml=$(jq -r '.clusters[] | "    - " + .' "$CONFIG_FILE")
+
+    cat > "policy-${policy_name}.yaml" << EOFPOLICY
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: ${policy_name}
+  namespace: default
+  annotations:
+    policy.open-cluster-management.io/standards: NIST-CSF
+    policy.open-cluster-management.io/categories: PR.AC Identity Management Authentication and Access Control
+    policy.open-cluster-management.io/controls: PR.AC-4 Access Control
+spec:
+  remediationAction: ${enforcement}
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: ${policy_name}-config
+        spec:
+          remediationAction: ${enforcement}
+          severity: medium
+          namespaceSelector:
+            exclude:
+              - kube-*
+            include:
+              - default
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: NetworkPolicy
+                metadata:
+                  name: deny-all-ingress
+                  namespace: default
+                spec:
+                  podSelector: {}
+                  policyTypes:
+                    - Ingress
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-${policy_name}
+  namespace: default
+placementRef:
+  name: placement-${policy_name}
+  kind: PlacementRule
+  apiGroup: apps.open-cluster-management.io
+subjects:
+  - name: ${policy_name}
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-${policy_name}
+  namespace: default
+spec:
+  clusterConditions:
+    - status: "True"
+      type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values:
+$values_yaml
+EOFPOLICY
+
+    oc apply -f "policy-${policy_name}.yaml"
+}
+
+# Read each policy definition from the config and create it
+jq -c '.policies[]' "$CONFIG_FILE" | while read -r policy; do
+    name=$(echo "$policy" | jq -r '.name')
+    enforcement=$(echo "$policy" | jq -r '.enforcement')
+    echo "Creating policy: $name (enforcement: $enforcement)"
+    create_security_policy "$name" "$enforcement"
+done
+
+echo ""
+echo "=== Policies currently defined on the hub ==="
+oc get policies -n default
+EOF
+
+chmod +x create_policy.sh
+./create_policy.sh
+Deliverable: oc get policies -n default lists security-baseline and resource-baseline. Expected result: both policies show remediationAction as inform in the oc get policies -n default -o wide output, and no oc apply errors were printed.
+
+Subtask 2.3: Check Policy Compliance and Wrap It in a Reusable Function
+cat > check_compliance.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="automation_config.json"
+
+: "${CONFIG_FILE:?}"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: $CONFIG_FILE not found. Run generate_config.sh and create_policy.sh first." >&2
+    exit 1
+fi
+
+check_policy_compliance() {
+    local policy_name=$1
+
+    echo "=== Compliance for policy: $policy_name ==="
+
+    local overall
+    overall=$(oc get policy "$policy_name" -n default -o json 2>/dev/null | jq -r '.status.compliant // "Pending"')
+    echo "Overall status: $overall"
+
+    echo "Per-cluster status:"
+    oc get policy "$policy_name" -n default -o json 2>/dev/null | \
+        jq -r '.status.status[]? | "  \(.clustername): \(.compliant)"'
+
+    echo ""
+}
+
+# Give the policy controller a moment to evaluate compliance
+echo "Waiting for policy evaluation..."
+sleep 15
+
+jq -r '.policies[].name' "$CONFIG_FILE" | while read -r policy_name; do
+    check_policy_compliance "$policy_name"
+done
+EOF
+
+chmod +x check_compliance.sh
+./check_compliance.sh
+Deliverable: For each policy in automation_config.json, the script prints an overall status (Compliant, NonCompliant, or Pending) and a per-cluster breakdown. Expected result: within a few minutes of applying the policies, each managed cluster listed in automation_config.json shows a compliance value of Compliant or NonCompliant (not indefinitely Pending); Pending immediately after creation is normal and should resolve on a re-run.
+
+Expected Outcomes
+You can authenticate to the RHACM hub API and dynamically discover managed clusters instead of relying on hardcoded names
+You can generate a configuration file whose cluster list is derived from the live environment, keeping automation consistent with what is actually deployed
+You can create RHACM Policy, PlacementRule, and PlacementBinding resources programmatically and verify their compliance status across all discovered managed clusters
+Troubleshooting
+Issue 1: list_clusters.sh prints "No managed clusters found" or an empty list Symptom: discovered_clusters.txt ends up empty, which then causes generate_config.sh to fail. Diagnostic hint: run oc get managedclusters directly on the hub to confirm at least one cluster is imported and its AVAILABLE column shows True; also confirm TOKEN and OCP_API_URL are set in your current shell session (echo $OCP_API_URL).
+
+Issue 2: Policy compliance stays Pending indefinitely in check_compliance.sh Symptom: repeated runs of check_compliance.sh never show Compliant or NonCompliant. Diagnostic hint: check that the PlacementRule actually selected clusters with oc get placementrule placement-<policy_name> -n default -o yaml and look at status.decisions; an empty decisions list means the clusterSelector values did not match any real managed cluster names, which usually means automation_config.json is stale â rerun generate_config.sh.
+
+Cleanup
+Remove the resources created during this lab so the hub cluster is left in its original state:
+
+# Delete policies, placement bindings, and placement rules created in Task 2
+jq -r '.policies[].name' automation_config.json | while read -r policy_name; do
+    oc delete policy "$policy_name" -n default --ignore-not-found
+    oc delete placementbinding "binding-$policy_name" -n default --ignore-not-found
+    oc delete placementrule "placement-$policy_name" -n default --ignore-not-found
+done
+
+# Remove locally generated files
+rm -f list_clusters.sh generate_config.sh create_policy.sh check_compliance.sh \
+      discovered_clusters.txt automation_config.json policy-*.yaml
+
+echo "Cleanup complete."
+Expected result: oc get policies -n default no longer lists security-baseline or resource-baseline, and the working directory contains none of the generated scripts or YAML files.
+
+Conclusion
+In this lab, you worked directly with the RHACM API to authenticate against a hub cluster, dynamically discover managed clusters, and persist that discovery into a reusable configuration file rather than relying on hardcoded cluster names. You then used that configuration to programmatically generate and apply Policy, PlacementRule, and PlacementBinding resources across every discovered cluster, and built a compliance-checking script to verify the results. Through this process you practiced a config-driven automation pattern that keeps scripts consistent with the real state of a multicluster environment, which is a foundational technique for building safe, repeatable RHACM automation in production. Finally, you validated your results with concrete oc get checks and cleaned up all created resources, leaving the hub cluster in its original state.
