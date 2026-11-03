@@ -1,0 +1,593 @@
+Lab 13: Deploy Cross-Cluster Workloads with RHACM
+Objectives
+By the end of this lab, you will be able to:
+
+Understand cross-cluster deployment strategies using Red Hat Advanced Cluster Management (RHACM)
+Implement GitOps workflows to automate application deployments across multiple OpenShift clusters
+Configure and manage application placement policies for multi-cluster environments
+Validate deployment consistency and monitor application health across clusters
+Troubleshoot common cross-cluster deployment issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes and OpenShift concepts
+Familiarity with Git version control and GitOps principles
+Knowledge of YAML configuration files
+Understanding of container orchestration fundamentals
+Experience with command-line interface operations
+Required Knowledge Areas
+OpenShift cluster administration basics
+Application deployment concepts
+Git repository management
+Basic networking concepts for multi-cluster environments
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+RHACM Hub cluster (pre-installed and configured)
+Two managed OpenShift clusters (cluster-east and cluster-west)
+Git repository access
+Pre-configured CLI tools (oc, kubectl, argocd)
+Task 1: Define Cross-Cluster Deployment Strategies
+Subtask 1.1: Understanding Multi-Cluster Architecture
+First, let's examine the current cluster setup and understand the multi-cluster architecture.
+
+Access the RHACM Hub Cluster
+# Set the hub cluster context
+oc config use-context hub-cluster
+
+# Verify RHACM installation
+oc get pods -n open-cluster-management
+List Managed Clusters
+# View all managed clusters
+oc get managedclusters
+
+# Get detailed information about managed clusters
+oc describe managedclusters
+Expected output should show two managed clusters: cluster-east and cluster-west.
+
+Subtask 1.2: Create Placement Policies
+Create placement policies to define where applications should be deployed.
+
+Create a Namespace for Application Management
+# Create namespace for our application
+oc create namespace cross-cluster-apps
+Define Placement Policy for Geographic Distribution
+Create a file named placement-policy.yaml:
+
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: geo-placement
+  namespace: cross-cluster-apps
+spec:
+  numberOfClusters: 2
+  clusterSets:
+    - default
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: environment
+              operator: In
+              values: ["production", "staging"]
+Apply the Placement Policy
+# Apply the placement configuration
+oc apply -f placement-policy.yaml
+
+# Verify placement creation
+oc get placement -n cross-cluster-apps
+Subtask 1.3: Configure Cluster Labels
+Label the managed clusters to support placement decisions.
+
+Label the East Cluster
+# Label cluster-east
+oc label managedcluster cluster-east environment=production region=east
+
+# Verify labels
+oc get managedcluster cluster-east --show-labels
+Label the West Cluster
+# Label cluster-west
+oc label managedcluster cluster-west environment=staging region=west
+
+# Verify labels
+oc get managedcluster cluster-west --show-labels
+Task 2: Use GitOps to Automate Deployments Across Clusters
+Subtask 2.1: Set Up Git Repository Structure
+Create Application Repository Structure
+# Create local directory structure
+mkdir -p ~/cross-cluster-app/{base,overlays/{east,west}}
+cd ~/cross-cluster-app
+Create Base Application Manifests
+Create base/deployment.yaml:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  labels:
+    app: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      containers:
+      - name: sample-app
+        image: quay.io/redhat-developer/hello-world-nginx:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: CLUSTER_REGION
+          value: "default"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app-service
+spec:
+  selector:
+    app: sample-app
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+Create Kustomization Base
+Create base/kustomization.yaml:
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- deployment.yaml
+
+commonLabels:
+  app.kubernetes.io/name: sample-app
+  app.kubernetes.io/version: v1.0.0
+Subtask 2.2: Create Environment-Specific Overlays
+Create East Cluster Overlay
+Create overlays/east/kustomization.yaml:
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sample-app-east
+
+resources:
+- ../../base
+
+patchesStrategicMerge:
+- deployment-patch.yaml
+
+commonLabels:
+  environment: production
+  region: east
+Create overlays/east/deployment-patch.yaml:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: sample-app
+        env:
+        - name: CLUSTER_REGION
+          value: "east"
+        - name: ENVIRONMENT
+          value: "production"
+Create West Cluster Overlay
+Create overlays/west/kustomization.yaml:
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sample-app-west
+
+resources:
+- ../../base
+
+patchesStrategicMerge:
+- deployment-patch.yaml
+
+commonLabels:
+  environment: staging
+  region: west
+Create overlays/west/deployment-patch.yaml:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: sample-app
+        env:
+        - name: CLUSTER_REGION
+          value: "west"
+        - name: ENVIRONMENT
+          value: "staging"
+Subtask 2.3: Initialize Git Repository
+Initialize and Commit to Git
+# Initialize git repository
+git init
+git add .
+git commit -m "Initial cross-cluster application setup"
+
+# Add remote repository (replace with your Git repository URL)
+git remote add origin https://github.com/your-username/cross-cluster-app.git
+git push -u origin main
+Subtask 2.4: Create RHACM Application
+Create Application Definition
+Create rhacm-application.yaml:
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cross-cluster-sample-app
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/cross-cluster-app.git
+    targetRevision: main
+    path: overlays/east
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sample-app-east
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: cross-cluster-app
+  namespace: cross-cluster-apps
+spec:
+  componentKinds:
+  - group: argoproj.io
+    kind: Application
+  descriptor: {}
+  selector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - cross-cluster-sample-app
+Create ApplicationSet for Multi-Cluster Deployment
+Create applicationset.yaml:
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cross-cluster-appset
+  namespace: openshift-gitops
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchLabels:
+          environment: production
+      values:
+        overlay: east
+        namespace: sample-app-east
+  - clusters:
+      selector:
+        matchLabels:
+          environment: staging
+      values:
+        overlay: west
+        namespace: sample-app-west
+  template:
+    metadata:
+      name: '{{name}}-sample-app'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/your-username/cross-cluster-app.git
+        targetRevision: main
+        path: 'overlays/{{values.overlay}}'
+      destination:
+        server: '{{server}}'
+        namespace: '{{values.namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+Apply ApplicationSet
+# Apply the ApplicationSet
+oc apply -f applicationset.yaml
+
+# Verify ApplicationSet creation
+oc get applicationset -n openshift-gitops
+Task 3: Validate Deployment Consistency
+Subtask 3.1: Monitor Application Deployment Status
+Check Application Status in RHACM
+# View applications across all clusters
+oc get applications -A
+
+# Check specific application status
+oc describe application cross-cluster-sample-app -n openshift-gitops
+Verify Deployment on Each Cluster
+# Switch to east cluster context
+oc config use-context cluster-east
+
+# Check deployment status
+oc get deployments -n sample-app-east
+oc get pods -n sample-app-east
+
+# Switch to west cluster context
+oc config use-context cluster-west
+
+# Check deployment status
+oc get deployments -n sample-app-west
+oc get pods -n sample-app-west
+Subtask 3.2: Validate Configuration Consistency
+Compare Environment Variables Across Clusters
+# Check east cluster configuration
+oc config use-context cluster-east
+oc get deployment sample-app -n sample-app-east -o jsonpath='{.spec.template.spec.containers[0].env}'
+
+# Check west cluster configuration
+oc config use-context cluster-west
+oc get deployment sample-app -n sample-app-west -o jsonpath='{.spec.template.spec.containers[0].env}'
+Verify Resource Allocation
+# Check replica counts
+echo "East cluster replicas:"
+oc config use-context cluster-east
+oc get deployment sample-app -n sample-app-east -o jsonpath='{.spec.replicas}'
+
+echo "West cluster replicas:"
+oc config use-context cluster-west
+oc get deployment sample-app -n sample-app-west -o jsonpath='{.spec.replicas}'
+Subtask 3.3: Test Application Connectivity
+Create Test Pods for Connectivity Testing
+# Test on east cluster
+oc config use-context cluster-east
+oc run test-pod --image=curlimages/curl --rm -it --restart=Never -- sh
+
+# Inside the test pod, test service connectivity
+curl http://sample-app-service.sample-app-east.svc.cluster.local
+exit
+Repeat for West Cluster
+# Test on west cluster
+oc config use-context cluster-west
+oc run test-pod --image=curlimages/curl --rm -it --restart=Never -- sh
+
+# Inside the test pod, test service connectivity
+curl http://sample-app-service.sample-app-west.svc.cluster.local
+exit
+Subtask 3.4: Monitor Application Health
+Create Health Check Script
+Create health-check.sh:
+
+#!/bin/bash
+
+echo "=== Cross-Cluster Application Health Check ==="
+
+# Function to check cluster health
+check_cluster_health() {
+    local cluster=$1
+    local namespace=$2
+    
+    echo "Checking $cluster cluster..."
+    oc config use-context $cluster
+    
+    # Check deployment status
+    local ready_replicas=$(oc get deployment sample-app -n $namespace -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local desired_replicas=$(oc get deployment sample-app -n $namespace -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+    
+    echo "  Deployment: $ready_replicas/$desired_replicas replicas ready"
+    
+    # Check pod status
+    local running_pods=$(oc get pods -n $namespace --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+    echo "  Running pods: $running_pods"
+    
+    # Check service endpoints
+    local endpoints=$(oc get endpoints sample-app-service -n $namespace -o jsonpath='{.subsets[0].addresses}' 2>/dev/null | jq length 2>/dev/null || echo "0")
+    echo "  Service endpoints: $endpoints"
+    
+    echo ""
+}
+
+# Check both clusters
+check_cluster_health "cluster-east" "sample-app-east"
+check_cluster_health "cluster-west" "sample-app-west"
+
+echo "Health check completed."
+Run Health Check
+# Make script executable
+chmod +x health-check.sh
+
+# Run health check
+./health-check.sh
+Subtask 3.5: Implement Automated Validation
+Create Validation Tests
+Create validation-tests.yaml:
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: validation-tests
+  namespace: cross-cluster-apps
+data:
+  test-script.sh: |
+    #!/bin/bash
+    
+    # Test 1: Verify deployment exists
+    test_deployment_exists() {
+        local cluster=$1
+        local namespace=$2
+        
+        oc config use-context $cluster
+        if oc get deployment sample-app -n $namespace >/dev/null 2>&1; then
+            echo "✓ Deployment exists in $cluster"
+            return 0
+        else
+            echo "✗ Deployment missing in $cluster"
+            return 1
+        fi
+    }
+    
+    # Test 2: Verify correct environment variables
+    test_environment_vars() {
+        local cluster=$1
+        local namespace=$2
+        local expected_region=$3
+        
+        oc config use-context $cluster
+        local actual_region=$(oc get deployment sample-app -n $namespace -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLUSTER_REGION")].value}')
+        
+        if [ "$actual_region" = "$expected_region" ]; then
+            echo "✓ Environment variables correct in $cluster"
+            return 0
+        else
+            echo "✗ Environment variables incorrect in $cluster (expected: $expected_region, actual: $actual_region)"
+            return 1
+        fi
+    }
+    
+    # Run tests
+    echo "Running validation tests..."
+    
+    test_deployment_exists "cluster-east" "sample-app-east"
+    test_deployment_exists "cluster-west" "sample-app-west"
+    
+    test_environment_vars "cluster-east" "sample-app-east" "east"
+    test_environment_vars "cluster-west" "sample-app-west" "west"
+    
+    echo "Validation tests completed."
+Apply and Execute Validation
+# Apply validation ConfigMap
+oc apply -f validation-tests.yaml
+
+# Extract and run validation script
+oc extract configmap/validation-tests --to=. -n cross-cluster-apps
+chmod +x test-script.sh
+./test-script.sh
+Troubleshooting Common Issues
+Issue 1: ApplicationSet Not Creating Applications
+Symptoms: ApplicationSet exists but no applications are created
+
+Solution:
+
+# Check ApplicationSet status
+oc describe applicationset cross-cluster-appset -n openshift-gitops
+
+# Verify cluster labels match selectors
+oc get managedclusters --show-labels
+
+# Check ArgoCD controller logs
+oc logs -n openshift-gitops -l app.kubernetes.io/name=argocd-applicationset-controller
+Issue 2: Git Repository Access Issues
+Symptoms: Applications show "ComparisonError" or "SyncError"
+
+Solution:
+
+# Verify repository credentials
+oc get secret -n openshift-gitops | grep repo
+
+# Test git repository access
+git clone https://github.com/your-username/cross-cluster-app.git /tmp/test-repo
+Issue 3: Placement Policy Not Working
+Symptoms: Applications not deploying to expected clusters
+
+Solution:
+
+# Check placement decisions
+oc get placementdecisions -n cross-cluster-apps
+
+# Verify cluster labels
+oc describe managedcluster cluster-east
+oc describe managedcluster cluster-west
+
+# Check placement status
+oc describe placement geo-placement -n cross-cluster-apps
+Advanced Configuration Options
+Multi-Region Disaster Recovery Setup
+For production environments, consider implementing disaster recovery:
+
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: dr-placement
+  namespace: cross-cluster-apps
+spec:
+  numberOfClusters: 2
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: disaster-recovery
+              operator: In
+              values: ["primary", "secondary"]
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+    - scoreCoordinate:
+        builtIn: Steady
+      weight: 1
+Blue-Green Deployment Strategy
+Implement blue-green deployments across clusters:
+
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: sample-app-rollout
+spec:
+  replicas: 5
+  strategy:
+    blueGreen:
+      activeService: sample-app-active
+      previewService: sample-app-preview
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 30
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      containers:
+      - name: sample-app
+        image: quay.io/redhat-developer/hello-world-nginx:latest
+Conclusion
+In this lab, you have successfully:
+
+Configured cross-cluster deployment strategies using RHACM placement policies and cluster labeling
+Implemented GitOps workflows with ApplicationSets to automate deployments across multiple OpenShift clusters
+Validated deployment consistency by monitoring application health and verifying configuration across clusters
+Learned troubleshooting techniques for common multi-cluster deployment issues
+Key Takeaways
+Strategic Placement: Proper cluster labeling and placement policies are crucial for effective multi-cluster application distribution
+GitOps Automation: ApplicationSets provide powerful automation for deploying applications across multiple clusters while maintaining consistency
+Validation Importance: Regular validation and health checks ensure applications are running correctly across all target clusters
+Troubleshooting Skills: Understanding common issues and their solutions is essential for maintaining reliable multi-cluster deployments
+Real-World Applications
+The skills learned in this lab are directly applicable to:
+
+Enterprise multi-region deployments for high availability and disaster recovery
+Development lifecycle management across different environments (dev, staging, production)
+Compliance and governance requirements for application deployment consistency
+Cost optimization through intelligent workload placement based on cluster capabilities and costs
+This foundation prepares you for advanced multi-cluster management scenarios and supports your journey toward the Multicluster Management with Red Hat OpenShift Platform Plus certification.
