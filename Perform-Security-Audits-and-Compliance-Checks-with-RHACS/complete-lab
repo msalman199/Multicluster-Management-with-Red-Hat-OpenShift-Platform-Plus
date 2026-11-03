@@ -1,0 +1,403 @@
+Lab 12: Perform Security Audits and Compliance Checks with RHACS
+Objectives
+By the end of this lab, students will be able to:
+
+Configure audit logging and policy violation tracking in Red Hat Advanced Cluster Security (RHACS)
+Execute vulnerability scans against container images using the roxctl CLI
+Generate and interpret compliance reports mapped to security frameworks such as CIS and NIST
+Build a compliance visibility dashboard configuration for tracking violations and vulnerability trends over time
+Understand how audit trails, vulnerability data, and compliance checks combine into a continuous security monitoring workflow
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes and OpenShift concepts (deployments, namespaces, ConfigMaps)
+Familiarity with container security principles (image scanning, runtime policies, RBAC)
+Working knowledge of YAML and JSON syntax
+Comfort with command-line interface operations
+General awareness of security compliance frameworks (CIS, NIST)
+Access to a RHACS Central instance and at least one OpenShift or Kubernetes cluster with a RHACS Sensor deployed
+This lab uses the roxctl CLI and the OpenShift CLI (oc). Install them in your lab environment as follows:
+
+# Install the OpenShift CLI (oc) if not already present
+# Download the archive appropriate for your OS from the OpenShift downloads page,
+# then extract and place it on your PATH. Verify with:
+oc version --client
+
+# Install roxctl (RHACS CLI) - example for Linux
+curl -L -o roxctl \
+  "https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
+chmod +x roxctl
+sudo mv roxctl /usr/local/bin/roxctl
+
+# Verify installation
+roxctl version
+Set the following environment variables, which are used throughout this lab:
+
+export CENTRAL_ENDPOINT="central-stackrox.apps.example.com:443"
+export ROX_API_TOKEN="<your-rhacs-api-token>"
+You can generate an API token from RHACS Central under Platform Configuration > Integrations > Authentication Tokens > API Token, granting it the Analyst role (read access to deployments, images, and policies) at minimum.
+
+Task 1: Configure Audit Logging and Policy Violation Notifications
+Step 1.1: Review Central's Audit Log Notifier
+RHACS Central emits administrative audit events (login, resource changes, API calls) automatically once an audit log webhook notifier is configured. Rather than inventing a custom logging subsystem, we configure the built-in generic webhook notifier that RHACS supports for audit events.
+
+Create a namespace-scoped ConfigMap to record the audit webhook target for this lab (this documents the endpoint used by the notifier you will create in Central's UI or API):
+
+# audit-webhook-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-webhook-config
+  namespace: stackrox
+data:
+  webhook-endpoint: "http://audit-receiver.stackrox.svc.cluster.local:8080/audit"
+  description: "Target endpoint for RHACS administrative audit event webhook notifier"
+Apply it:
+
+oc apply -f audit-webhook-config.yaml
+Register the generic webhook notifier using the RHACS API so that Central forwards audit events (administrative events such as login and configuration changes):
+
+curl -sk -X POST \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  "https://${CENTRAL_ENDPOINT}/v1/notifiers" \
+  -d '{
+    "name": "audit-log-webhook",
+    "type": "generic",
+    "generic": {
+      "endpoint": "http://audit-receiver.stackrox.svc.cluster.local:8080/audit",
+      "auditLoggingEnabled": true,
+      "skipTLSVerify": true
+    }
+  }' | jq .
+Deliverable: Run the command above and confirm the JSON response includes an "id" field for the newly created notifier. This confirms Central has registered the audit webhook notifier and will emit audit events to it.
+
+Step 1.2: Create a Policy to Track and Enforce Runtime Violations
+Rather than a custom violation-tracking service, use RHACS's native policy engine, which already tracks every violation against the Violations view in Central. Create a custom runtime policy targeting suspicious process execution:
+
+{
+  "name": "Suspicious Network Utility Execution",
+  "description": "Detects execution of common network reconnaissance tools inside containers",
+  "rationale": "Presence of tools such as nmap, netcat, or wget in a running container may indicate reconnaissance or data exfiltration activity",
+  "remediation": "Investigate the flagged container and remove unnecessary network utilities from the base image",
+  "categories": ["Anomalous Activity"],
+  "lifecycleStages": ["RUNTIME"],
+  "severity": "HIGH_SEVERITY",
+  "enforcementActions": [],
+  "policySections": [
+    {
+      "policyGroups": [
+        {
+          "fieldName": "Process Name",
+          "values": [
+            { "value": "nmap" },
+            { "value": "nc" },
+            { "value": "netcat" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+Save this as suspicious-network-utility-policy.json and create it in RHACS via the API:
+
+curl -sk -X POST \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  "https://${CENTRAL_ENDPOINT}/v1/policies" \
+  -d @suspicious-network-utility-policy.json | jq .
+Deliverable: The response returns the created policy object with an "id" field. Confirm the policy appears in Platform Configuration > Policy Management in the RHACS UI, listed under category "Anomalous Activity" with severity "High".
+
+Task 2: Scan Container Images for Vulnerabilities
+Step 2.1: Scan a Single Image
+Use roxctl to scan a publicly available base image and produce a JSON report:
+
+roxctl image scan \
+  --endpoint "${CENTRAL_ENDPOINT}" \
+  --image "registry.access.redhat.com/ubi8/ubi:latest" \
+  --output json > ubi8-scan-results.json
+
+# Inspect the top-level structure of the scan result
+jq '.result.summary' ubi8-scan-results.json
+The roxctl image scan JSON output includes a top-level result object containing summary (counts by severity) and vulnerabilities (a flattened list of CVEs). Confirm the summary counts are non-negative integers.
+
+Step 2.2: Scan All Deployed Images in a Namespace
+Identify and scan every unique image currently running in a target namespace:
+
+NAMESPACE="default"
+
+# Extract unique container images from all deployments in the namespace
+IMAGES=$(oc get deployments -n "${NAMESPACE}" \
+  -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' \
+  | sort -u)
+
+echo "Images found in namespace ${NAMESPACE}:"
+echo "${IMAGES}"
+
+# Scan each image and store results
+mkdir -p scan-results
+while IFS= read -r IMAGE; do
+  [ -z "$IMAGE" ] && continue
+  SAFE_NAME=$(echo "$IMAGE" | tr '/:' '__')
+  echo "Scanning ${IMAGE}..."
+  roxctl image scan \
+    --endpoint "${CENTRAL_ENDPOINT}" \
+    --image "${IMAGE}" \
+    --output json > "scan-results/${SAFE_NAME}.json"
+done <<< "${IMAGES}"
+
+ls -la scan-results/
+Deliverable: The scan-results/ directory contains one JSON file per unique image running in the namespace. Each file, when passed to jq '.result.summary', should print severity counts (for example CRITICAL_VULNERABILITY_SEVERITY, IMPORTANT_VULNERABILITY_SEVERITY, MODERATE_VULNERABILITY_SEVERITY, LOW_VULNERABILITY_SEVERITY).
+
+Step 2.3: Summarize Vulnerability Findings
+Aggregate the per-image scan results into a single summary report:
+
+cat << 'EOF' > summarize-scans.sh
+#!/bin/bash
+# Summarize vulnerability scan results across all scanned images
+set -euo pipefail
+
+RESULTS_DIR="scan-results"
+SUMMARY_FILE="vulnerability-summary.txt"
+
+echo "=== Vulnerability Scan Summary ===" > "${SUMMARY_FILE}"
+echo "Generated: $(date)" >> "${SUMMARY_FILE}"
+echo "" >> "${SUMMARY_FILE}"
+
+for FILE in "${RESULTS_DIR}"/*.json; do
+  IMAGE_NAME=$(jq -r '.result.image.name.fullName // "unknown"' "${FILE}")
+  CRITICAL=$(jq '.result.summary.CRITICAL_VULNERABILITY_SEVERITY // 0' "${FILE}")
+  IMPORTANT=$(jq '.result.summary.IMPORTANT_VULNERABILITY_SEVERITY // 0' "${FILE}")
+  MODERATE=$(jq '.result.summary.MODERATE_VULNERABILITY_SEVERITY // 0' "${FILE}")
+  LOW=$(jq '.result.summary.LOW_VULNERABILITY_SEVERITY // 0' "${FILE}")
+
+  echo "Image: ${IMAGE_NAME}" >> "${SUMMARY_FILE}"
+  echo "  Critical: ${CRITICAL}  Important: ${IMPORTANT}  Moderate: ${MODERATE}  Low: ${LOW}" >> "${SUMMARY_FILE}"
+  echo "" >> "${SUMMARY_FILE}"
+done
+
+echo "Summary written to ${SUMMARY_FILE}"
+cat "${SUMMARY_FILE}"
+EOF
+
+chmod +x summarize-scans.sh
+./summarize-scans.sh
+Deliverable: vulnerability-summary.txt lists every scanned image with its Critical/Important/Moderate/Low vulnerability counts. Identify the single image with the highest Critical count and note it for remediation follow-up.
+
+Task 3: Generate Compliance Reports and a Monitoring Dashboard
+Step 3.1: Run a CIS Benchmark Compliance Scan
+RHACS ships with built-in compliance standards, including CIS Kubernetes Benchmark checks, evaluated per cluster. Trigger a compliance run and retrieve results using the API:
+
+# List available compliance standards
+curl -sk -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  "https://${CENTRAL_ENDPOINT}/v1/compliance/standards" | jq '.standards[] | {id, name}'
+
+# Get your cluster ID (needed to trigger and query compliance runs)
+curl -sk -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  "https://${CENTRAL_ENDPOINT}/v1/clusters" | jq '.clusters[] | {id, name}'
+Trigger a compliance run for the CIS Kubernetes Benchmark standard against your cluster (substitute the cluster ID and standard ID retrieved above):
+
+export CLUSTER_ID="<cluster-id-from-above>"
+export CIS_STANDARD_ID="CIS_Kubernetes_v1_5"
+
+curl -sk -X POST \
+  -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  "https://${CENTRAL_ENDPOINT}/v1/compliance/runs" \
+  -d "{
+    \"selection\": {
+      \"clusterId\": \"${CLUSTER_ID}\",
+      \"standardId\": \"${CIS_STANDARD_ID}\"
+    }
+  }" | jq .
+Retrieve the aggregated results once the run completes:
+
+curl -sk -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+  "https://${CENTRAL_ENDPOINT}/v1/compliance/aggregations/results?groupBy=STANDARD&groupBy=CATEGORY&standardId=${CIS_STANDARD_ID}" \
+  | jq '.results[] | {aggregationKeys: [.aggregationKeys[].id], numPassing, numFailing}' \
+  > cis-compliance-results.json
+
+cat cis-compliance-results.json
+Deliverable: cis-compliance-results.json contains an array of objects, each with numPassing and numFailing counts per CIS control category. Identify one category with numFailing greater than zero and note the control category name for remediation planning.
+
+Step 3.2: Export a Human-Readable Compliance Report
+cat << 'EOF' > generate-compliance-report.sh
+#!/bin/bash
+# Generate a readable compliance summary from RHACS aggregation results
+set -euo pipefail
+
+INPUT_FILE="cis-compliance-results.json"
+REPORT_FILE="cis-compliance-report.txt"
+
+echo "=== CIS Kubernetes Benchmark Compliance Report ===" > "${REPORT_FILE}"
+echo "Generated: $(date)" >> "${REPORT_FILE}"
+echo "" >> "${REPORT_FILE}"
+
+TOTAL_PASS=$(jq '[.[] | .numPassing] | add // 0' "${INPUT_FILE}")
+TOTAL_FAIL=$(jq '[.[] | .numFailing] | add // 0' "${INPUT_FILE}")
+TOTAL=$((TOTAL_PASS + TOTAL_FAIL))
+
+echo "Total controls evaluated: ${TOTAL}" >> "${REPORT_FILE}"
+echo "Passing: ${TOTAL_PASS}" >> "${REPORT_FILE}"
+echo "Failing: ${TOTAL_FAIL}" >> "${REPORT_FILE}"
+
+if [ "${TOTAL}" -gt 0 ]; then
+  SCORE=$(( (TOTAL_PASS * 100) / TOTAL ))
+  echo "Compliance score: ${SCORE}%" >> "${REPORT_FILE}"
+fi
+
+echo "" >> "${REPORT_FILE}"
+echo "Per-category breakdown:" >> "${REPORT_FILE}"
+jq -r '.[] | "  Category: \(.aggregationKeys | join(" / "))  Pass: \(.numPassing)  Fail: \(.numFailing)"' \
+  "${INPUT_FILE}" >> "${REPORT_FILE}"
+
+echo "Report written to ${REPORT_FILE}"
+cat "${REPORT_FILE}"
+EOF
+
+chmod +x generate-compliance-report.sh
+./generate-compliance-report.sh
+Deliverable: cis-compliance-report.txt shows an overall compliance percentage and a per-category pass/fail breakdown. Record the overall compliance score percentage for your cluster.
+
+Step 3.3: Define a Compliance and Vulnerability Dashboard Configuration
+To make audit, vulnerability, and compliance data continuously visible, define a Grafana-style dashboard configuration that a Prometheus-backed metrics exporter (such as stackrox-metrics or a custom exporter reading the RHACS API) can populate. This JSON can be imported into Grafana once metric series matching these expressions are being exported.
+
+{
+  "dashboard": {
+    "title": "RHACS Compliance Dashboard",
+    "tags": ["rhacs", "compliance", "security"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Compliance Score by Standard",
+        "type": "stat",
+        "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+        "targets": [
+          {
+            "expr": "rhacs_compliance_score",
+            "legendFormat": "{{standard}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "max": 100,
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Policy Violations Over Time",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+        "targets": [
+          {
+            "expr": "sum(rate(rhacs_policy_violations_total[1h])) by (severity)",
+            "legendFormat": "{{severity}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Vulnerability Counts by Severity",
+        "type": "bargauge",
+        "gridPos": { "h": 6, "w": 8, "x": 0, "y": 6 },
+        "targets": [
+          {
+            "expr": "sum(rhacs_image_vulnerabilities_total) by (severity)",
+            "legendFormat": "{{severity}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "min": 0
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Vulnerability Trend (30 Days)",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 16, "x": 8, "y": 6 },
+        "targets": [
+          {
+            "expr": "sum(rhacs_image_vulnerabilities_total{severity=\"CRITICAL\"})",
+            "legendFormat": "Critical"
+          },
+          {
+            "expr": "sum(rhacs_image_vulnerabilities_total{severity=\"IMPORTANT\"})",
+            "legendFormat": "Important"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Compliance Pass/Fail Timeline",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          {
+            "expr": "sum(rhacs_compliance_checks_passing)",
+            "legendFormat": "Passing"
+          },
+          {
+            "expr": "sum(rhacs_compliance_checks_failing)",
+            "legendFormat": "Failing"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Top Deployments by Risk Score",
+        "type": "table",
+        "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          {
+            "expr": "topk(10, rhacs_deployment_risk_score)",
+            "legendFormat": "{{deployment}} ({{namespace}})"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      }
+    ],
+    "schemaVersion": 36,
+    "version": 1,
+    "refresh": "5m"
+  }
+}
+Save this file as rhacs-compliance-dashboard.json and validate it is well-formed JSON before import:
+
+jq empty rhacs-compliance-dashboard.json && echo "Dashboard JSON is valid"
+Deliverable: The jq empty command completes with no error output and prints "Dashboard JSON is valid", confirming the dashboard definition is syntactically correct and ready to import into Grafana once the corresponding rhacs_* metrics are being exported by your monitoring pipeline.
+
+Expected Outcomes
+A registered RHACS audit webhook notifier and a custom runtime policy visible in Central, demonstrating audit trail and violation tracking configuration
+A scan-results/ directory and vulnerability-summary.txt report showing vulnerability counts by severity for every image running in a target namespace
+A validated CIS compliance report (cis-compliance-report.txt) with an overall compliance score, plus a syntactically valid Grafana dashboard JSON file for ongoing compliance and vulnerability monitoring
+Troubleshooting
+roxctl returns a TLS or connection error when scanning images: Confirm CENTRAL_ENDPOINT includes the correct port (typically 443) and that your ROX_API_TOKEN has not expired. Test connectivity first with curl -sk https://${CENTRAL_ENDPOINT}/v1/ping.
+Compliance run API call returns an empty or missing results array: The compliance run may still be in progress. Wait 30-60 seconds and re-query the aggregation endpoint, and confirm the standardId and clusterId values match exactly what was returned by the /v1/compliance/standards and /v1/clusters endpoints.
+Conclusion
+In this lab, you configured RHACS audit and policy violation tracking, ran vulnerability scans across container images with roxctl, and generated CIS compliance reports through the RHACS API, culminating in a structured dashboard configuration for ongoing visibility into policy violations, vulnerability trends, and compliance status. You practiced turning raw scan and compliance API output into actionable, reviewable artifacts, which mirrors how security and compliance teams operationalize RHACS in production. To build on this work, consider exploring RHACS integration with external SIEM tools for centralized audit log correlation, automating remediation workflows triggered by policy violations, and extending compliance coverage to additional frameworks such as PCI-DSS or NIST SP 800-53 using the same aggregation API patterns demonstrated here.

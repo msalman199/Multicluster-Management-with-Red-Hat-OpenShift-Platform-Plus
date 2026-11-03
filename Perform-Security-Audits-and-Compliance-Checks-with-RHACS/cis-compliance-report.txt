@@ -1,0 +1,8 @@
+=== CIS Kubernetes Benchmark Compliance Report ===
+Generated: Tue Nov  3 03:28:50 UTC 2026
+
+Total controls evaluated: 0
+Passing: 
+Failing: 
+
+Per-category breakdown:
